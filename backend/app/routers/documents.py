@@ -1,3 +1,4 @@
+
 import hashlib
 from pathlib import Path
 from uuid import uuid4
@@ -10,7 +11,9 @@ from ..config import settings
 from ..database import get_db
 from ..models import AuditEvent, Document, ReviewRequest
 from ..schemas import DocumentRead
-
+from ..services.ocr_service import extract_text
+from ..services.extraction_service import extract_fields
+from ..services.verification_service import verify_invoice
 
 router = APIRouter(prefix="/api/requests", tags=["documents"])
 
@@ -34,42 +37,48 @@ async def upload_document(
     review_request = db.get(ReviewRequest, request_id)
 
     if review_request is None:
+        await file.close()
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=404,
             detail="Review request not found",
         )
 
     if not file.filename:
+        await file.close()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=400,
             detail="A filename is required",
         )
 
     content_type = (file.content_type or "").lower()
 
     if content_type not in ALLOWED_CONTENT_TYPES:
+        await file.close()
         raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            status_code=415,
             detail="Only PDF documents are supported",
         )
 
-    contents = await file.read(MAX_FILE_SIZE + 1)
+    try:
+        contents = await file.read(MAX_FILE_SIZE + 1)
+    finally:
+        await file.close()
 
     if not contents:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=400,
             detail="The uploaded file is empty",
         )
 
     if len(contents) > MAX_FILE_SIZE:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=413,
             detail=f"File exceeds the {settings.max_upload_mb} MB limit",
         )
 
     if not contents.startswith(b"%PDF-"):
         raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            status_code=415,
             detail="The uploaded file is not a valid PDF",
         )
 
@@ -77,28 +86,64 @@ async def upload_document(
         with fitz.open(stream=contents, filetype="pdf") as pdf:
             if pdf.page_count < 1:
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
+                    status_code=400,
                     detail="The PDF contains no pages",
                 )
-
-            extracted_text = "\n".join(
-                page.get_text() for page in pdf
-            ).strip()
-
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=400,
             detail="The PDF file is damaged or cannot be opened",
         ) from exc
 
-    original_filename = Path(file.filename.replace("\\", "/")).name
-    original_filename = original_filename[:255]
+    original_filename = Path(
+        file.filename.replace("\\", "/")
+    ).name[:255]
 
     stored_filename = f"{uuid4().hex}.pdf"
     storage_path = settings.upload_path / stored_filename
     file_hash = hashlib.sha256(contents).hexdigest()
+
+    try:
+        settings.upload_path.mkdir(parents=True, exist_ok=True)
+        storage_path.write_bytes(contents)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to store the uploaded document",
+        ) from exc
+
+    # M2 processing: OCR/text extraction -> field extraction -> verification.
+    try:
+        ocr_result = extract_text(storage_path)
+        extraction_result = extract_fields(ocr_result)
+        verification_result = verify_invoice(extraction_result)
+
+        extracted_text = ocr_result.get("text") or None
+        extracted_fields = extraction_result
+
+    except Exception:
+        # Keep the uploaded document available for manual review.
+        extracted_text = None
+        extracted_fields = {
+            "filename": original_filename,
+            "extraction_status": "failed",
+            "fields": {},
+            "review_note": (
+                "Automatic extraction failed. Manual review is required."
+            ),
+        }
+        verification_result = {
+            "status": "needs_review",
+            "findings": [
+                "Automatic document processing failed."
+            ],
+            "approval_decision": "human_review_required",
+            "message": (
+                "The document was stored, but manual review is required."
+            ),
+        }
 
     document = Document(
         request_id=request_id,
@@ -108,13 +153,12 @@ async def upload_document(
         mime_type="application/pdf",
         size_bytes=len(contents),
         sha256=file_hash,
-        extracted_text=extracted_text or None,
+        extracted_text=extracted_text,
+        extracted_fields=extracted_fields,
+        verification_result=verification_result,
     )
 
     try:
-        settings.upload_path.mkdir(parents=True, exist_ok=True)
-        storage_path.write_bytes(contents)
-
         db.add(document)
         db.flush()
 
@@ -128,6 +172,12 @@ async def upload_document(
                     "filename": original_filename,
                     "size_bytes": len(contents),
                     "sha256": file_hash,
+                    "extraction_status": extracted_fields.get(
+                        "extraction_status", "unknown"
+                    ),
+                    "verification_status": verification_result.get(
+                        "status", "needs_review"
+                    ),
                 },
             )
         )
@@ -137,19 +187,15 @@ async def upload_document(
 
     except Exception as exc:
         db.rollback()
-
         try:
             storage_path.unlink(missing_ok=True)
         except OSError:
             pass
 
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail="Unable to save the uploaded document",
         ) from exc
-
-    finally:
-        await file.close()
 
     return document
 
@@ -166,7 +212,7 @@ def list_documents(
 
     if review_request is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=404,
             detail="Review request not found",
         )
 
