@@ -5,9 +5,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .database import Base, engine
-from . import models
+from . import models  # noqa: F401  (registers tables for create_all)
 from .routers.requests import router as requests_router
 from .routers.documents import router as documents_router
+from .routers.reviews import router as reviews_router
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -29,10 +31,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,6 +39,7 @@ app.add_middleware(
 
 app.include_router(requests_router)
 app.include_router(documents_router)
+app.include_router(reviews_router)
 
 
 @app.get("/health", tags=["system"])

@@ -182,6 +182,41 @@ async def upload_document(
             )
         )
 
+        flagged = [
+            f for f in (verification_result.get("findings") or [])
+            if isinstance(f, dict) and f.get("status") == "flag"
+        ]
+        db.add(AuditEvent(
+            request_id=request_id, actor="system",
+            action="extraction_completed",
+            details={
+                "document_id": document.id,
+                "extraction_status": extracted_fields.get(
+                    "extraction_status", "unknown"),
+            },
+        ))
+        db.add(AuditEvent(
+            request_id=request_id, actor="system",
+            action="verification_completed",
+            details={
+                "document_id": document.id,
+                "verification_status": verification_result.get(
+                    "status", "needs_review"),
+                "flags": len(flagged),
+            },
+        ))
+        if review_request.status in ("submitted", "correction_requested"):
+            previous_status = review_request.status
+            review_request.status = "under_review"
+            db.add(AuditEvent(
+                request_id=request_id, actor="system",
+                action="moved_to_review",
+                details={
+                    "previous_status": previous_status,
+                    "new_status": "under_review",
+                },
+            ))
+
         db.commit()
         db.refresh(document)
 

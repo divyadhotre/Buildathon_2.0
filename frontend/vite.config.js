@@ -1,7 +1,10 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+// Proxies /api to FastAPI so the frontend can call the backend without CORS issues.
 export default defineConfig({
   plugins: [react()],
-  server: { host: "127.0.0.1", port: 5173 },
-});
+     server: { proxy: { '/api': 'http://127.0.0.1:8000', '/health': 'http://127.0.0.1:8000' } },
+})
+
+
+  

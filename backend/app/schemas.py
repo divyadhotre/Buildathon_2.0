@@ -20,6 +20,9 @@ class RequestCreate(BaseModel):
     notes: str | None = Field(default=None, max_length=5000)
 
 
+ 
+
+
 class RequestRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -52,6 +55,10 @@ class ReviewDecision(BaseModel):
     decision: Literal["approve", "reject", "request_correction"]
     actor: str = Field(default="reviewer", min_length=1, max_length=120)
     reason: str = Field(min_length=3, max_length=2000)
+    override_reason: str | None = Field(default=None, max_length=2000)
+
+
+
 
 
 class AuditEventRead(BaseModel):
@@ -67,3 +74,7 @@ class AuditEventRead(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+class FieldCorrection(BaseModel):
+    field: str = Field(min_length=1, max_length=60)
+    value: str = Field(max_length=500)
+    reason: str = Field(min_length=3, max_length=2000)
