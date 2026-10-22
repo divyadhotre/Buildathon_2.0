@@ -149,6 +149,13 @@ export function Upload({ ctx }) {
   return (
     <section>
       <Head eyebrow="START A NEW REVIEW" title="Submit a document" sub="Upload an invoice and, if you have one, its approved purchase order." />
+      {ctx.role !== "Submitter" && (
+        <div className="notice">
+          <AlertCircle size={18} />
+          <span>You are uploading as {ctx.user}. You will not be able to review this request later. Switch to Submitter first.</span>
+          <button onClick={() => ctx.setRole("Submitter")}>Switch</button>
+        </div>
+      )}
       <div className="submit-grid">
         <form className="panel upload-form" onSubmit={submit}>
           <label htmlFor="sup">Supplier name (optional)</label>
@@ -232,6 +239,9 @@ function ReviewDetail({ id, ctx }) {
   const [override, setOverride] = useState("");
   const [busy, setBusy] = useState(false);
   const [edit, setEdit] = useState(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiErr, setAiErr] = useState("");
+  const [openedAt] = useState(() => Date.now());
 
   const load = useCallback(
     () => api.getRequest(id).then((r) => { setD(r); setErr(""); }).catch((e) => setErr(e.message)), [id]);
@@ -257,8 +267,9 @@ function ReviewDetail({ id, ctx }) {
   const own = d.submitter && d.submitter === ctx.user;
   const canAct = ["Reviewer", "Approver"].includes(ctx.role) && !final && !own;
   const why = final ? "A final decision is already recorded."
-    : own ? "You submitted this request, so you cannot decide it."
-    : !canAct ? "Your role cannot record decisions." : "";
+    : own ? `This request was submitted by ${d.submitter}, which is your current user, so you cannot decide it. Switch the role in Settings (for example to Approver) to review it.`
+    : !canAct ? "Your role cannot record decisions."
+    : failed ? "Extraction failed: Approve is disabled. You can still reject or request a correction." : "";
 
   const ai = d.ai_suggestion;
   const aiKey = ai?.decision && Object.keys(api.DECISIONS).find((k) => k === ai.decision || api.DECISIONS[k] === ai.decision);
@@ -269,10 +280,19 @@ function ReviewDetail({ id, ctx }) {
     if (differs && !override.trim()) return ctx.notify("You disagree with the AI suggestion. Add an override reason.");
     setBusy(true);
     try {
-      await api.decide(id, key, comment.trim(), ctx.user, differs ? { override_reason: override.trim() } : {});
+      await api.decide(id, key, comment.trim(), ctx.user, {
+        override_reason: differs ? override.trim() : undefined,
+        review_seconds: Math.round((Date.now() - openedAt) / 1000)
+      });
       ctx.notify("Decision recorded."); setComment(""); setOverride("");
       await load(); ctx.reload();
     } catch (e) { ctx.notify(e.message); } finally { setBusy(false); }
+  }
+
+  async function generate() {
+    setAiBusy(true); setAiErr("");
+    try { await api.requestAiSuggestion(id); await load(); }
+    catch (e) { setAiErr(e.message); } finally { setAiBusy(false); }
   }
 
   async function saveEdit() {
@@ -349,20 +369,32 @@ function ReviewDetail({ id, ctx }) {
 
       <div className="panel decision-panel">
         <h3>AI suggestion</h3>
-        {ai ? <div className="ai-box"><strong>{ai.decision}</strong><p>{ai.reason}</p><small>Suggestion only · not a decision</small></div>
-          : <p className="muted-text">No AI suggestion stored.</p>}
+        {aiBusy ? <p className="muted-text">Gemini is analysing the extracted fields and checks…</p>
+          : ai ? (
+            <div className="ai-box">
+              <strong>Suggested: {ai.decision.replaceAll("_", " ")}</strong>
+              <p>{ai.reason}</p>
+              {ai.key_findings?.length > 0 && <ul>{ai.key_findings.map((k, i) => <li key={i}>{k}</li>)}</ul>}
+              <small>Suggestion only · {ai.model} · {fmt(ai.created_at)}{ai.adjusted ? " · adjusted by a safety rule" : ""}</small>
+            </div>
+          ) : <p className="muted-text">No suggestion yet. Generate one as a second opinion.</p>}
+        {aiErr && <p className="error-message">{aiErr}</p>}
+        <button className="ghost" disabled={!canAct || aiBusy} onClick={generate}>
+          {aiBusy ? "Generating…" : ai ? "Regenerate suggestion" : "Generate AI suggestion"}
+        </button>
+
         <h3 className="subsection-title">Human decision</h3>
         {d.decision && <div className="human-box"><strong>{d.decision.decision}</strong> by {d.decision.actor} · {fmt(d.decision.created_at || d.decision.at)}<p>{d.decision.reason}</p></div>}
         <label htmlFor="c">Reviewer comment *</label>
         <textarea id="c" rows={4} disabled={!canAct} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Explain your decision or the correction needed" />
         {aiKey && <><label htmlFor="o">Override reason (needed if you disagree with the AI)</label>
           <textarea id="o" rows={2} disabled={!canAct} value={override} onChange={(e) => setOverride(e.target.value)} /></>}
+        {why && <div className="notice"><AlertCircle size={18} /><span>{why}</span></div>}
         <div className="decision-buttons">
           <button className="decision approve" disabled={!canAct || busy || failed} onClick={() => decide("approve")}><Check size={16} /> Approve</button>
           <button className="decision reject" disabled={!canAct || busy} onClick={() => decide("reject")}><X size={16} /> Reject</button>
           <button className="decision correction" disabled={!canAct || busy} onClick={() => decide("request_correction")}><FileCheck2 size={16} /> Request correction</button>
         </div>
-        {why && <p className="form-hint">{why}</p>}
         <p className="form-hint">The server re-checks permissions. This screen only hides what you cannot do.</p>
       </div>
     </div>
@@ -379,10 +411,11 @@ export function AuditTrail({ ctx }) {
     api.getAuditHistory(rid || undefined).then((x) => { setEv(api.arr(x)); setErr(""); }).catch((e) => setErr(e.message));
   }, [rid]);
   const rows = (ev || []).map((e) => ({
+    id: e.id,
     time: e.timestamp ?? e.created_at ?? e.time, action: e.action ?? e.event_type ?? e.type, user: e.actor ?? e.user,
     req: e.request_id, decision: e.decision, reason: e.reason ?? e.comment, field: e.field,
     prev: e.previous_value ?? e.old_value, next: e.new_value ?? e.corrected_value
-  })).sort((a, b) => new Date(a.time) - new Date(b.time));
+  })).sort((a, b) => a.id - b.id);
   const steps = [["Uploaded", /upload/], ["Extracted", /extract/], ["Verified", /verif|check/], ["In Review", /review/], ["Approved / Rejected", /approv|reject/]];
   return (
     <section>
@@ -416,36 +449,47 @@ export function Reports() {
   const [m, setM] = useState(null);
   const [err, setErr] = useState("");
   useEffect(() => { api.getEvaluation().then(setM).catch((e) => setErr(e.message)); }, []);
+  const measured = m?.total_invoices != null;
   const v = (x, suffix = "") => (x == null ? "—" : `${x}${suffix}`);
   const acc = (x) => (x == null ? null : x <= 1 ? Math.round(x * 1000) / 10 : x);
   const a = m?.avg_review_seconds_assisted, b = m?.avg_review_seconds_manual;
+  const n = m?.review_time_samples || {};
   const both = a != null && b != null && b > 0;
+  const prev = m?.previous;
   return (
     <section>
-      <Head eyebrow="EVALUATION & MEASUREMENT" title="AI Testing & Impact" sub="Measured results on a labelled test set. Nothing here is estimated." />
+      <Head eyebrow="EVALUATION & MEASUREMENT" title="AI Testing & Impact" sub="Measured results only. Nothing here is estimated." />
       <div className="info-banner"><Activity size={22} />
-        <div><strong>{m ? "Measured on the labelled test set" : "Not measured yet"}</strong>
-          <p>{m ? "Values come from the backend evaluation run." : err || "Loading…"} A time-saving figure appears only when both review times were measured.</p></div></div>
+        <div><strong>{measured ? "Measured on a synthetic labelled test set" : "Not measured yet"}</strong>
+          <p>{measured ? `${m.test_set}. Run on ${fmt(m.generated_at)}.` : err || "Run `python evaluation/run_evaluation.py` in the backend folder to measure the pipeline."}</p></div></div>
       <div className="metric-grid">
         <Metric icon={FileText} label="Test invoices" value={v(m?.total_invoices)} note="Labelled ground truth" />
-        <Metric icon={CheckCircle2} label="Correctly detected issues" value={v(m?.detected_issues)} note="True positives" />
-        <Metric icon={AlertCircle} label="Missed issues" value={v(m?.missed_issues)} note="False negatives" />
+        <Metric icon={CheckCircle2} label="Correctly detected issues" value={v(m?.detected_issues)} note="Injected issues that were flagged" />
+        <Metric icon={AlertCircle} label="Missed issues" value={v(m?.missed_issues)} note="Injected issues not flagged" />
         <Metric icon={Activity} label="False alerts" value={v(m?.false_alerts)} note="Flags with no real issue" />
       </div>
       <div className="impact-grid">
         <div className="panel"><h3>Field extraction accuracy</h3>
           <div className="big">{acc(m?.extraction_accuracy) == null ? "—" : `${acc(m.extraction_accuracy)}%`}</div>
-          <p className="muted-text">{m?.fields_evaluated ? `${m.fields_evaluated} fields compared with ground truth.` : "Compare OCR output with verified field labels."}</p></div>
+          <p className="muted-text">{m?.fields_evaluated ? `${m.fields_evaluated} printed fields compared with ground truth.` : "Compare extracted fields with the values printed in the document."}</p>
+          {m?.per_field_accuracy && <p className="muted-text">{Object.entries(m.per_field_accuracy).map(([k, x]) => `${k} ${acc(x)}%`).join(" · ")}</p>}
+          {prev?.extraction_accuracy != null && <p className="muted-text">Previous run ({fmt(prev.generated_at)}): {acc(prev.extraction_accuracy)}% accuracy, {prev.false_alerts} false alerts.</p>}</div>
         <div className="panel"><h3>Average review time</h3>
           <div className="comparison-grid">
-            <div><span>Without assistance</span><strong>{v(b, " s")}</strong></div>
-            <div><span>With assistance</span><strong>{v(a, " s")}</strong></div>
+            <div><span>Without AI suggestion</span><strong>{v(b, " s")}</strong><small>{n.manual ?? 0} decisions</small></div>
+            <div><span>With AI suggestion</span><strong>{v(a, " s")}</strong><small>{n.assisted ?? 0} decisions</small></div>
           </div>
-          <p className="muted-text">{both ? `Measured difference: ${Math.round(((b - a) / b) * 100)}% (${b - a} s per document).` : "No improvement figure is shown until both baselines are measured."}</p></div>
+          <p className="muted-text">{both
+            ? `Measured difference: ${Math.round(((b - a) / b) * 100)}%${Math.min(n.assisted, n.manual) < 5 ? " (very small sample, treat with caution)" : ""}.`
+            : "No improvement figure is shown until decisions exist in both groups."}</p></div>
       </div>
       <div className="panel" style={{ marginTop: 16 }}><h3>Test data & methodology</h3>
-        <p className="muted-text">{m?.methodology || "Describe the test set, labelling method, split and how review time was timed once the evaluation is run."}</p>
-        {m?.test_set && <p className="muted-text">Test set: {m.test_set}</p>}</div>
+        <p className="muted-text">{m?.methodology || "Run the evaluation script to see the test set and method."}</p>
+        <p className="muted-text">Review time = seconds from opening a request to recording the decision (browser timer, sessions over 30 minutes ignored). "With AI suggestion" = the reviewer generated a Gemini suggestion before deciding.</p></div>
+      {m?.failures?.length > 0 && (
+        <div className="panel" style={{ marginTop: 16 }}><h3>Representative errors</h3>
+          {m.failures.slice(0, 6).map((f) => <p className="muted-text" key={f.file}><strong>{f.file}</strong> — {f.problems.join("; ")}</p>)}</div>
+      )}
     </section>
   );
 }

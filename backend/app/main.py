@@ -9,6 +9,7 @@ from . import models  # noqa: F401  (registers tables for create_all)
 from .routers.requests import router as requests_router
 from .routers.documents import router as documents_router
 from .routers.reviews import router as reviews_router
+from .routers.ai import router as ai_router
 
 
 @asynccontextmanager
@@ -40,6 +41,7 @@ app.add_middleware(
 app.include_router(requests_router)
 app.include_router(documents_router)
 app.include_router(reviews_router)
+app.include_router(ai_router)
 
 
 @app.get("/health", tags=["system"])

@@ -11,8 +11,8 @@ from typing import Any
 
 FIELD_PATTERNS = {
     "supplier": [
-        r"(?im)^\s*(?:vendor|supplier)\s*:?\s*\n\s*([^\n]+)",
-        r"(?im)^\s*(?:vendor|supplier)\s*:\s*([^\n]+)",
+        r"(?im)^\s*(?:vendor|supplier|seller)\s*:?\s*\n\s*([^\n]+)",  
+        r"(?im)^\s*(?:vendor|supplier|seller)\s*:\s*([^\n]+)",
     ],
     "invoice_number": [
         r"(?im)^\s*invoice\s*(?:number|no\.?|#)\s*:?\s*\n?\s*([A-Z0-9][A-Z0-9/_-]*)",

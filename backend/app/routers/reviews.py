@@ -52,6 +52,21 @@ def automated_suggestion(document: Document) -> str:
         return "request_correction"
     return "approve"
 
+def stored_ai_suggestion(db: Session, request_id: int, document_id: int):
+    """Latest Gemini suggestion saved for this document, or None."""
+    events = db.scalars(
+        select(AuditEvent)
+        .where(
+            AuditEvent.request_id == request_id,
+            AuditEvent.action == "ai_suggestion_generated",
+        )
+        .order_by(AuditEvent.id.desc())
+    ).all()
+    for event in events:
+        d = event.details or {}
+        if d.get("document_id") == document_id and d.get("action") in DECISION_STATUS:
+            return d
+    return None
 
 def load_for_review(db: Session, request_id: int, actor: tuple[str, str]):
     user, role = actor
@@ -96,24 +111,28 @@ def record_decision(
 
     suggestion = automated_suggestion(document)
 
-    if payload.decision == "approve" and suggestion == "manual_review":
+    # Extraction failure still blocks approval, whatever anyone suggests.
+    if (
+        payload.decision == "approve"
+        and automated_suggestion(document) == "manual_review"
+    ):
         raise HTTPException(
             status_code=400,
             detail="Extraction failed. Approval is blocked; request a "
                    "correction or reject.",
         )
 
+    ai = stored_ai_suggestion(db, request_id, document.id)
+    suggestion = ai["action"] if ai else None
     override = (payload.override_reason or "").strip()
-    disagrees = (
-        suggestion in {"approve", "request_correction"}
-        and suggestion != payload.decision
-    )
-    if disagrees and not override:
+
+    if suggestion and suggestion != payload.decision and not override:
         raise HTTPException(
             status_code=400,
-            detail="You disagree with the automated suggestion. "
+            detail="You disagree with the AI suggestion. "
                    "An override reason is required.",
         )
+   
 
     previous_status = review_request.status
     review_request.status = DECISION_STATUS[payload.decision]
@@ -129,7 +148,9 @@ def record_decision(
                 "new_status": review_request.status,
                 "document_id": document.id,
                 "ai_suggestion": suggestion,
+                "ai_source": "gemini" if ai else None,
                 "override_reason": override or None,
+                "review_seconds": payload.review_seconds,
             },
         )
     )

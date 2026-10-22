@@ -225,3 +225,6 @@ small, .table-sub { display: block; margin-top: 3px; color: #9a8a7b; font-size: 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 .snippet { margin-top: 10px; padding: 10px; background: #faf5ed; border: 1px solid #eee2d3; border-radius: 8px; }
 .snippet pre { margin: 6px 0 0; white-space: pre-wrap; font-size: 11px; color: #5b4430; }
+
+.ai-box ul { margin: 8px 0 0; padding-left: 16px; color: #7d6a58; font-size: 11px; line-height: 1.6; }
+.decision-panel > .ghost { margin-top: 10px; }

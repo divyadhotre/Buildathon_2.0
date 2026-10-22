@@ -116,16 +116,19 @@ function build(req, docs = [], events = []) {
 
   const checks = toChecks(inv?.verification_result);
   const flags = checks.filter((c) => c.type !== "passed");
-  const failed = ef.extraction_status === "failed";
 
-  let ai = null;
-  if (inv) {
-    ai = failed
-      ? { decision: "manual_review", reason: "Automatic extraction failed. Manual review is required and approval is blocked." }
-      : flags.length
-        ? { decision: "request_correction", reason: `${flags.length} automated check(s) flagged: ${flags.map((c) => c.message).join(" ")}` }
-        : { decision: "approve", reason: "Automated checks passed. This does not prove authenticity; a human decision is still required." };
-  }
+  // Latest Gemini suggestion saved for the current invoice (stored as an audit event).
+  const stored = events
+    .filter((e) => e.action === "ai_suggestion_generated" && e.details?.document_id === inv?.id)
+    .sort((a, b) => b.id - a.id)[0];
+  const ai = stored ? {
+    decision: stored.details.action,
+    reason: stored.details.explanation,
+    key_findings: stored.details.key_findings || [],
+    model: stored.details.model,
+    adjusted: !!stored.details.adjusted,
+    created_at: utc(stored.created_at)
+  } : null;
 
   const poAmount = po?.extracted_fields?.fields?.total;
   const last = events
@@ -207,7 +210,10 @@ export function uploadDocument(requestId, file, kind = "invoice") {
 export function decide(requestId, decision, reason, actor = session.user, extra = {}) {
   return apiRequest(
     `/api/requests/${id(requestId)}/decision`,
-    send("POST", { decision: DECISIONS[decision] || decision, actor, reason, override_reason: extra.override_reason })
+    send("POST", {
+      decision: DECISIONS[decision] || decision, actor, reason,
+      override_reason: extra.override_reason, review_seconds: extra.review_seconds
+    })
   );
 }
 
@@ -216,6 +222,10 @@ export const correctField = (requestId, label, value, reason) =>
     `/api/requests/${id(requestId)}/corrections`,
     send("POST", { field: KEYS[label] || label, value: String(value), reason })
   );
+
+// Asks the backend to run Gemini. It only stores a suggestion; it never decides.
+export const requestAiSuggestion = (requestId) =>
+  apiRequest(`/api/requests/${id(requestId)}/ai-suggestion`, { method: "POST" });
 
 export async function getAuditHistory(requestId) {
   const events = arr(await apiRequest(`/api/audit${requestId ? `?request_id=${id(requestId)}` : ""}`));
@@ -228,8 +238,12 @@ export async function getAuditHistory(requestId) {
       action: e.action,
       timestamp: utc(e.created_at),
       decision: DECISION_ACTIONS.includes(e.action) ? STATUS[d.new_status] || d.new_status : undefined,
-      reason: [d.reason, d.override_reason && `Override of automated suggestion (${d.ai_suggestion}): ${d.override_reason}`]
-        .filter(Boolean).join(" — ") || undefined,
+      reason: [
+        d.reason,
+        d.explanation && `AI suggested ${d.action}: ${d.explanation}`,
+        d.error && `AI suggestion failed: ${d.error}`,
+        d.override_reason && `Override of AI suggestion (${d.ai_suggestion}): ${d.override_reason}`
+      ].filter(Boolean).join(" — ") || undefined,
       field: d.field && LABELS[d.field],
       previous_value: d.previous_value,
       new_value: d.new_value

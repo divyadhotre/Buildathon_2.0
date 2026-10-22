@@ -56,6 +56,7 @@ class ReviewDecision(BaseModel):
     actor: str = Field(default="reviewer", min_length=1, max_length=120)
     reason: str = Field(min_length=3, max_length=2000)
     override_reason: str | None = Field(default=None, max_length=2000)
+    review_seconds: int | None = Field(default=None, ge=0, le=86400)
 
 
 
