@@ -17,7 +17,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-import fitz  # PyMuPDF
+import pymupdf as fitz
 
 from app.services.extraction_service import extract_fields
 from app.services.ocr_service import extract_text

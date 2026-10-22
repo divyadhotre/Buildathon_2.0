@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..auth import get_actor
 from ..database import get_db
 from ..models import AuditEvent, ReviewRequest
 from ..schemas import RequestCreate, RequestRead
@@ -18,10 +19,20 @@ router = APIRouter(prefix="/api/requests", tags=["requests"])
 def create_request(
     payload: RequestCreate,
     db: Session = Depends(get_db),
+    actor: tuple[str, str] = Depends(get_actor),
 ):
+    user, role = actor
+    if role != "submitter":
+        raise HTTPException(status_code=403, detail="Only submitters can create requests")
+    if payload.submitter.strip() != user:
+        raise HTTPException(
+            status_code=403,
+            detail="A request must be created for the authenticated submitter",
+        )
+
     review_request = ReviewRequest(
         title=payload.title.strip(),
-        submitter=payload.submitter.strip(),
+        submitter=user,
         notes=payload.notes,
         status="submitted",
         current_version=1,
@@ -32,7 +43,7 @@ def create_request(
 
     audit_event = AuditEvent(
         request_id=review_request.id,
-        actor=payload.submitter.strip(),
+        actor=user,
         action="request_created",
         details={
             "title": review_request.title,

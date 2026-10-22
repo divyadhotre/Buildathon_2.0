@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import * as api from "./services/api.js";
 import {
-  Dashboard, Upload, MyDocuments, PendingReview, AuditTrail, Reports, Settings, view, isPending
+  Dashboard, Upload, MyDocuments, PendingReview, AuditTrail, Reports, Settings, view
 } from "./pages/index.jsx";
 import "./styles.css";
 
@@ -14,10 +14,10 @@ const NAV = [
   ["upload", "Upload Document", UploadCloud],
   ["documents", "My Documents", FileText],
   ["review", "Pending Review", ClipboardCheck],
-  ["audit", "Audit Trail", History],
-  ["reports", "Reports & AI Evaluation", Activity],
-  ["settings", "Settings", Cog]
+  ["reports", "AI Testing", Activity],
+  ["audit", "Audit Trail", History]
 ];
+const PAGE_TITLES = { ...Object.fromEntries(NAV.map(([id, label]) => [id, label])), settings: "Settings" };
 const PAGES = { dashboard: Dashboard, upload: Upload, documents: MyDocuments, review: PendingReview, audit: AuditTrail, reports: Reports, settings: Settings };
 
 const USERS = { Submitter: "demo-submitter", Reviewer: "demo-reviewer", Approver: "demo-approver" };
@@ -29,6 +29,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selectedId, setSelectedId] = useState(null);
+  const [resubmitId, setResubmitId] = useState(null);
   const [role, setRole] = useState("Reviewer");
   const [notice, setNotice] = useState("");
   const [menu, setMenu] = useState(false);
@@ -54,15 +55,21 @@ export default function App() {
 
   const go = (p) => { location.hash = p; setMenu(false); setNotice(""); };
   const ctx = {
-    requests, loading, error, reload, go, role, user, selectedId,
+    requests, loading, error, reload, go, role, user, selectedId, resubmitId,
     setRole: (r) => { setRole(r); },
+    clearResubmission: () => setResubmitId(null),
+    resubmit: (id) => { setResubmitId(id); go("upload"); },
     notify: setNotice,
-    open: (id) => { setSelectedId(id); go("review"); }
+    open: (id) => { setSelectedId(id); go("review"); },
+    openAudit: (id) => { setSelectedId(id); go("audit"); }
   };
 
   const Page = PAGES[page];
-  const title = NAV.find((n) => n[0] === page)[1];
-  const pendingCount = requests.map(view).filter(isPending).length;
+  const title = PAGE_TITLES[page];
+  const reviewStage = role === "Approver" ? "Pending approval" : "Under review";
+  const pendingCount = requests.map(view).filter((request) =>
+    request.status === reviewStage && request.submitter !== user
+  ).length;
 
   return (
     <div className="app-shell">
@@ -97,8 +104,11 @@ export default function App() {
           <button className="icon-button mobile-menu-button" onClick={() => setMenu(true)} aria-label="Open menu"><Menu size={20} /></button>
           <div className="breadcrumb"><span>Workspace</span><span>/</span><strong>{title}</strong></div>
           <div className="topbar-right">
-            <span className="preview-badge">{error ? "● Backend offline" : "● Connected"}</span>
+            <span className="preview-badge">{loading ? "● Connecting…" : error ? "● Backend offline" : "● Connected"}</span>
             <button className="icon-button" onClick={() => go("review")} aria-label="Pending reviews"><Bell size={19} /></button>
+            <button className={`settings-control ${page === "settings" ? "active" : ""}`} onClick={() => go("settings")} aria-label="Settings and role assignment">
+              <Cog size={16} /><span>Settings</span><span className="role-pill">{role}</span>
+            </button>
           </div>
         </header>
         <div className="page-content">

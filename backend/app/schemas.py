@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 RequestStatus = Literal[
     "submitted",
     "under_review",
+    "pending_approval",
     "approved",
     "rejected",
     "correction_requested",

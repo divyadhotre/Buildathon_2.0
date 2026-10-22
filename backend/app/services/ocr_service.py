@@ -1,24 +1,21 @@
-"""PDF text extraction and OCR fallback to be implemented.
-
-Suggested flow:
-1. Try PyMuPDF text extraction for digital PDFs.
-2. If text is absent/insufficient, render pages and run Tesseract OCR.
-3. Return text with page numbers and extraction method.
-4. Surface errors as processing failures, never as approvals.
 """
-
-"""
-OCR service for the Buildathon 2.0 document verification system.
+OCR service for the document verification system.
 
 Supports:
 - Digital PDFs using PyMuPDF
 - Scanned PDFs using Tesseract OCR
 - PNG, JPG and JPEG images
+- Plain text and Microsoft Word DOCX files
 
 Returns extracted text, page numbers and extraction methods.
 OCR results are evidence for review, NOT document approval.
 """
 
+import os
+import shutil
+import xml.etree.ElementTree as ET
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -28,23 +25,15 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 
 SUPPORTED_IMAGE_TYPES = {".png", ".jpg", ".jpeg"}
-SUPPORTED_TYPES = SUPPORTED_IMAGE_TYPES | {".pdf"}
-
-# The default Windows installation path. If Tesseract is on PATH,
-# pytesseract can usually find it without this setting.
-import shutil
-
-TESSERACT_EXE = Path(
-    shutil.which("tesseract")
-    or r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+SUPPORTED_TYPES = SUPPORTED_IMAGE_TYPES | {".pdf", ".txt", ".docx"}
+MAX_DOCX_XML_BYTES = 20 * 1024 * 1024
 
 # Safety limit for this initial prototype.
 MAX_PDF_PAGES = 100
 
-
 TESSERACT_EXE = Path(
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    os.getenv("TESSERACT_CMD") or shutil.which("tesseract")
+    or r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 )
 
 
@@ -95,6 +84,48 @@ def _extract_image(path: Path) -> dict[str, Any]:
     }
 
 
+def _extract_text_file(path: Path) -> dict[str, Any]:
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("The text file must use UTF-8 encoding.") from exc
+    if "\x00" in text:
+        raise ValueError("The text file contains invalid binary data.")
+    return {
+        "text": text,
+        "page_count": 1,
+        "pages": [{"page_number": 1, "text": text, "method": "plain_text"}],
+    }
+
+
+def _extract_docx(path: Path) -> dict[str, Any]:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            info = archive.getinfo("word/document.xml")
+            if info.file_size > MAX_DOCX_XML_BYTES:
+                raise ValueError("The Word document contains too much text to process.")
+            xml = archive.read(info)
+        if b"<!DOCTYPE" in xml.upper() or b"<!ENTITY" in xml.upper():
+            raise ValueError("The Word document contains unsupported XML declarations.")
+        root = ET.fromstring(xml)
+    except (KeyError, zipfile.BadZipFile, ET.ParseError) as exc:
+        raise ValueError("The Word document is damaged or invalid.") from exc
+    paragraphs = []
+    for paragraph in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p"):
+        value = "".join(
+            node.text or ""
+            for node in paragraph.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")
+        )
+        if value.strip():
+            paragraphs.append(value)
+    text = "\n".join(paragraphs)
+    return {
+        "text": text,
+        "page_count": 1,
+        "pages": [{"page_number": 1, "text": text, "method": "docx_text"}],
+    }
+
+
 def _extract_pdf(path: Path) -> dict[str, Any]:
     """Extract digital PDF text, using OCR when a page needs it."""
     pages: list[dict[str, Any]] = []
@@ -119,10 +150,8 @@ def _extract_pdf(path: Path) -> dict[str, Any]:
                 text = page.get_text("text").strip()
                 method = "pdf_text"
 
-                # If a page has little or no text, try OCR.
-                # This also helps with PDFs containing a scanned page
-                # alongside pages with selectable text.
-                if len(text) < 20:
+                # Only require OCR when the page has no embedded text.
+                if not text:
                     configure_tesseract()
                     pixmap = page.get_pixmap(
                         matrix=fitz.Matrix(2, 2),
@@ -186,7 +215,7 @@ def extract_text(file_path: str | Path) -> dict[str, Any]:
 
     if suffix not in SUPPORTED_TYPES:
         raise ValueError(
-            "Unsupported file type. Upload PDF, PNG, JPG or JPEG."
+            "Unsupported file type. Upload PDF, PNG, JPG, JPEG, TXT or DOCX."
         )
 
     try:
@@ -194,9 +223,13 @@ def extract_text(file_path: str | Path) -> dict[str, Any]:
             # Try ordinary PDF text extraction first.
             # The PDF helper uses OCR only when a page needs it.
             result = _extract_pdf(path)
-        else:
+        elif suffix in SUPPORTED_IMAGE_TYPES:
             configure_tesseract()
             result = _extract_image(path)
+        elif suffix == ".txt":
+            result = _extract_text_file(path)
+        else:
+            result = _extract_docx(path)
 
     except pytesseract.TesseractNotFoundError as exc:
         raise RuntimeError(

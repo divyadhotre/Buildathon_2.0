@@ -5,15 +5,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..auth import get_actor
+from ..auth import DECIDERS, get_actor
 from ..database import get_db
-from ..models import AuditEvent, Document
+from ..models import AuditEvent, Document, ReviewRequest
 from ..services.genai_service import (
     SuggestionError,
     generate_suggestion,
     status as ai_status,
 )
-from .reviews import latest_invoice, load_for_review
+from .reviews import FINAL_STATUSES, latest_document
 
 router = APIRouter(tags=["ai"])
 
@@ -28,10 +28,29 @@ def create_ai_suggestion(
     actor: tuple[str, str] = Depends(get_actor),
 ):
     """Generate and store a suggestion. It never changes the request status."""
-    _, user = load_for_review(db, request_id, actor)
+    user, role = actor
+    review_request = db.get(ReviewRequest, request_id)
+    if review_request is None:
+        raise HTTPException(status_code=404, detail="Review request not found")
+    if role == "submitter":
+        if review_request.submitter != user:
+            raise HTTPException(
+                status_code=403,
+                detail="You can request AI assistance only for your own documents",
+            )
+    elif role in DECIDERS:
+        if review_request.submitter == user:
+            raise HTTPException(
+                status_code=403,
+                detail="You cannot review a request you submitted",
+            )
+    else:
+        raise HTTPException(status_code=403, detail="Your role cannot request AI assistance")
+    if review_request.status in FINAL_STATUSES:
+        raise HTTPException(status_code=409, detail="A final decision is already recorded")
 
-    invoice = latest_invoice(db, request_id)
-    if invoice is None:
+    document = latest_document(db, request_id)
+    if document is None:
         raise HTTPException(status_code=400, detail="Upload a document first")
 
     po = db.scalars(
@@ -44,19 +63,30 @@ def create_ai_suggestion(
     ).first()
 
     try:
-        result = generate_suggestion(invoice, po)
+        result = generate_suggestion(document, po)
     except SuggestionError as exc:
         db.add(AuditEvent(
             request_id=request_id, actor="gemini", action="ai_suggestion_failed",
-            details={"document_id": invoice.id, "error": str(exc), "requested_by": user},
+            details={"document_id": document.id, "error": str(exc), "requested_by": user},
         ))
         db.commit()
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
-    details = {**result, "document_id": invoice.id, "requested_by": user}
+    details = {**result, "document_id": document.id, "requested_by": user}
+    suggestion_available = result.get("suggestion_available")
     db.add(AuditEvent(
-        request_id=request_id, actor="gemini",
-        action="ai_suggestion_generated", details=details,
+        request_id=request_id,
+        actor=(
+            "gemini"
+            if suggestion_available and result.get("model") != "Built-in evidence summary (Gemini not configured)"
+            else "system"
+        ),
+        action=(
+            "ai_suggestion_generated"
+            if suggestion_available
+            else "ai_human_review_required"
+        ),
+        details=details,
     ))
     db.commit()
     return details
