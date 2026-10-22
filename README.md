@@ -1,4 +1,4 @@
-# DocuSure AI
+﻿# DocuVerify AI
 ### Evidence-First Document Verification & Approval System
 
 **GitHub Repository:** https://github.com/divyadhotre/Buildathon_2.0
@@ -20,7 +20,7 @@
 - [2. Problem Statement](#2-problem-statement)
 - [3. Our Proposed Solution](#3-our-proposed-solution)
 - [4. Key Features](#4-key-features)
-- [5. What Makes DocuSure AI Different](#5-what-makes-doc usure-ai-different)
+- [5. What Makes DocuVerify AI Different](#5-what-makes-doc usure-ai-different)
 - [6. End-to-End Workflow](#6-end-to-end-workflow)
 - [7. System Architecture](#7-system-architecture)
 - [8. Technology Stack](#8-technology-stack)
@@ -44,11 +44,11 @@
 
 ## 1. Overview
 
-DocuSure AI is an AI-assisted document verification and approval system for reviewing business documents through a structured, evidence-driven workflow. Invoice checks are a specialized ruleset; other and unfamiliar document types can still be uploaded, classified where possible, inspected, and reviewed.
+DocuVerify AI is an AI-assisted document verification and approval system for reviewing business documents through a structured, evidence-driven workflow. Invoice checks are a specialized ruleset; other and unfamiliar document types can still be uploaded, classified where possible, inspected, and reviewed.
 
 The system aims to combine document text extraction, structured field identification, deterministic verification rules, reviewer corrections, version history, role-based decisions, and evidence-grounded GenAI explanations in one workflow.
 
-Rather than treating a document as simply valid or invalid, DocuSure AI is designed to show:
+Rather than treating a document as simply valid or invalid, DocuVerify AI is designed to show:
 
 - What information was extracted.
 - Which verification checks passed or raised an issue.
@@ -87,11 +87,11 @@ Build a system that can:
 10. Generate grounded explanations or correction messages using stored evidence.
 11. Introduce a team-designed innovation and evaluate its value.
 
-DocuSure AI implements this workflow for common business documents, with invoice arithmetic and required-field checks as its first specialized ruleset.
+DocuVerify AI implements this workflow for common business documents, with invoice arithmetic and required-field checks as its first specialized ruleset.
 
 ## 3. Our Proposed Solution
 
-DocuSure AI provides a traceable review workflow for uploaded documents, with specialized invoice verification where the evidence supports it.
+DocuVerify AI provides a traceable review workflow for uploaded documents, with specialized invoice verification where the evidence supports it.
 
 ### Proposed workflow
 
@@ -193,11 +193,11 @@ Dashboard counts will be derived from stored application data rather than hard-c
 
 ---
 
-## 5. What Makes DocuSure AI Different
+## 5. What Makes DocuVerify AI Different
 
 Our proposed differentiator is **evidence-linked verification combined with measurable reviewer effort**.
 
-Many basic prototypes stop after extracting fields or displaying a red warning. DocuSure AI aims to make the reason behind a warning inspectable and to evaluate whether this presentation helps reviewers work more efficiently.
+Many basic prototypes stop after extracting fields or displaying a red warning. DocuVerify AI aims to make the reason behind a warning inspectable and to evaluate whether this presentation helps reviewers work more efficiently.
 
 ### Innovation 1: Evidence-linked flags
 
@@ -486,7 +486,7 @@ The API contract will be updated alongside the implementation to keep frontend a
 
 ## 12. Grounded GenAI Assistance
 
-DocuSure AI is intended to use a local language model for reviewer assistance.
+DocuVerify AI is intended to use a local language model for reviewer assistance.
 
 ### Planned capabilities
 
@@ -569,7 +569,7 @@ The team will prioritize measurable correctness, explainability, and workflow re
 
 ## 15. Responsible AI and Security
 
-Document verification can affect financial and administrative decisions. DocuSure AI is therefore designed with explicit safeguards.
+Document verification can affect financial and administrative decisions. DocuVerify AI is therefore designed with explicit safeguards.
 
 ### Human oversight
 
@@ -599,7 +599,7 @@ Document verification can affect financial and administrative decisions. DocuSur
 
 A passed arithmetic or required-field check does not establish that an invoice is genuine. A possible duplicate does not prove fraud. OCR may misread text, and language models may produce incorrect explanations.
 
-DocuSure AI will communicate these limitations and rely on authorized human review for final decisions.
+DocuVerify AI will communicate these limitations and rely on authorized human review for final decisions.
 
 ---
 
@@ -718,10 +718,8 @@ These instructions describe the intended development environment. Commands may n
 
 After the GitHub repository is created:
 
-```bash
-git clone YOUR_GITHUB_REPOSITORY_URL
-cd docverify
-```
+git clone https://github.com/divyadhotre/Buildathon_2.0.git
+cd Buildathon_2.0
 
 ### 2. Set up the backend
 
@@ -941,7 +939,7 @@ The structure will evolve as the application is implemented. Tests, migrations, 
 
 ## Closing Note
 
-DocuSure AI aims to make document verification more transparent and accountable by connecting automated checks to evidence, preserving correction history, and keeping final decisions under human control.
+DocuVerify AI aims to make document verification more transparent and accountable by connecting automated checks to evidence, preserving correction history, and keeping final decisions under human control.
 
 Our engineering priorities are straightforward:
 
@@ -953,4 +951,4 @@ Our engineering priorities are straightforward:
 
 The current repository establishes the project foundation. The next milestone is to turn the design into a working, tested invoice-verification workflow and document each verified improvement as the team progresses.
 
-**DocuSure AI — Verify with evidence. Review with confidence. Decide with accountability.**
+**DocuVerify AI — Verify with evidence. Review with confidence. Decide with accountability.**
