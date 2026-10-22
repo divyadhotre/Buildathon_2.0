@@ -1,0 +1,451 @@
+[
+  {
+    "file": "invoice_01_clean.pdf",
+    "kind": "clean",
+    "written": {
+      "supplier": "Orchid Stationers",
+      "invoice_number": "INV-2026-101",
+      "date": "17 October 2026",
+      "subtotal": 13150.0,
+      "tax": 2367.0,
+      "total": 15517.0
+    },
+    "issues": [],
+    "labels": {
+      "supplier": "Supplier",
+      "total": "Total",
+      "currency": ""
+    }
+  },
+  {
+    "file": "invoice_02_clean.pdf",
+    "kind": "clean",
+    "written": {
+      "supplier": "Northstar Components",
+      "invoice_number": "INV-2026-102",
+      "date": "8 October 2026",
+      "subtotal": 53400.0,
+      "tax": 9612.0,
+      "total": 63012.0
+    },
+    "issues": [],
+    "labels": {
+      "supplier": "Seller",
+      "total": "Total",
+      "currency": "INR "
+    }
+  },
+  {
+    "file": "invoice_03_clean.pdf",
+    "kind": "clean",
+    "written": {
+      "supplier": "Vega Packaging",
+      "invoice_number": "INV-2026-103",
+      "date": "26 October 2026",
+      "subtotal": 62500.0,
+      "tax": 11250.0,
+      "total": 73750.0
+    },
+    "issues": [],
+    "labels": {
+      "supplier": "Vendor",
+      "total": "Grand Total",
+      "currency": "INR "
+    }
+  },
+  {
+    "file": "invoice_04_clean.pdf",
+    "kind": "clean",
+    "written": {
+      "supplier": "Lotus Hardware",
+      "invoice_number": "INV-2026-104",
+      "date": "25 October 2026",
+      "subtotal": 59600.0,
+      "tax": 10728.0,
+      "total": 70328.0
+    },
+    "issues": [],
+    "labels": {
+      "supplier": "Supplier",
+      "total": "Grand Total",
+      "currency": "Rs. "
+    }
+  },
+  {
+    "file": "invoice_05_clean.pdf",
+    "kind": "clean",
+    "written": {
+      "supplier": "Lotus Hardware",
+      "invoice_number": "INV-2026-105",
+      "date": "8 October 2026",
+      "subtotal": 80150.0,
+      "tax": 14427.0,
+      "total": 94577.0
+    },
+    "issues": [],
+    "labels": {
+      "supplier": "Seller",
+      "total": "Grand Total",
+      "currency": "Rs. "
+    }
+  },
+  {
+    "file": "invoice_06_clean.pdf",
+    "kind": "clean",
+    "written": {
+      "supplier": "Northstar Components",
+      "invoice_number": "INV-2026-106",
+      "date": "4 October 2026",
+      "subtotal": 1250.0,
+      "tax": 225.0,
+      "total": 1475.0
+    },
+    "issues": [],
+    "labels": {
+      "supplier": "Vendor",
+      "total": "Total Amount",
+      "currency": ""
+    }
+  },
+  {
+    "file": "invoice_07_clean.pdf",
+    "kind": "clean",
+    "written": {
+      "supplier": "Northstar Components",
+      "invoice_number": "INV-2026-107",
+      "date": "15 October 2026",
+      "subtotal": 30400.0,
+      "tax": 5472.0,
+      "total": 35872.0
+    },
+    "issues": [],
+    "labels": {
+      "supplier": "Supplier",
+      "total": "Total Amount",
+      "currency": ""
+    }
+  },
+  {
+    "file": "invoice_08_clean.pdf",
+    "kind": "clean",
+    "written": {
+      "supplier": "Lotus Hardware",
+      "invoice_number": "INV-2026-108",
+      "date": "22 October 2026",
+      "subtotal": 2150.0,
+      "tax": 387.0,
+      "total": 2537.0
+    },
+    "issues": [],
+    "labels": {
+      "supplier": "Seller",
+      "total": "Total Amount",
+      "currency": "INR "
+    }
+  },
+  {
+    "file": "invoice_09_clean.pdf",
+    "kind": "clean",
+    "written": {
+      "supplier": "Kiran Traders",
+      "invoice_number": "INV-2026-109",
+      "date": "13 October 2026",
+      "subtotal": 33150.0,
+      "tax": 5967.0,
+      "total": 39117.0
+    },
+    "issues": [],
+    "labels": {
+      "supplier": "Vendor",
+      "total": "Total",
+      "currency": "INR "
+    }
+  },
+  {
+    "file": "invoice_10_clean.pdf",
+    "kind": "clean",
+    "written": {
+      "supplier": "Orchid Stationers",
+      "invoice_number": "INV-2026-110",
+      "date": "12 October 2026",
+      "subtotal": 26750.0,
+      "tax": 4815.0,
+      "total": 31565.0
+    },
+    "issues": [],
+    "labels": {
+      "supplier": "Supplier",
+      "total": "Total",
+      "currency": "Rs. "
+    }
+  },
+  {
+    "file": "invoice_11_clean.pdf",
+    "kind": "clean",
+    "written": {
+      "supplier": "Vega Packaging",
+      "invoice_number": "INV-2026-111",
+      "date": "24 October 2026",
+      "subtotal": 83400.0,
+      "tax": 15012.0,
+      "total": 98412.0
+    },
+    "issues": [],
+    "labels": {
+      "supplier": "Seller",
+      "total": "Total",
+      "currency": "Rs. "
+    }
+  },
+  {
+    "file": "invoice_12_missing_date.pdf",
+    "kind": "missing_date",
+    "written": {
+      "supplier": "Northstar Components",
+      "invoice_number": "INV-2026-112",
+      "subtotal": 53550.0,
+      "tax": 9639.0,
+      "total": 63189.0
+    },
+    "issues": [
+      "missing_field:date"
+    ],
+    "labels": {
+      "supplier": "Vendor",
+      "total": "Grand Total",
+      "currency": ""
+    }
+  },
+  {
+    "file": "invoice_13_missing_date.pdf",
+    "kind": "missing_date",
+    "written": {
+      "supplier": "Northstar Components",
+      "invoice_number": "INV-2026-113",
+      "subtotal": 35850.0,
+      "tax": 6453.0,
+      "total": 42303.0
+    },
+    "issues": [
+      "missing_field:date"
+    ],
+    "labels": {
+      "supplier": "Supplier",
+      "total": "Grand Total",
+      "currency": ""
+    }
+  },
+  {
+    "file": "invoice_14_missing_date.pdf",
+    "kind": "missing_date",
+    "written": {
+      "supplier": "Blue Harbor Logistics",
+      "invoice_number": "INV-2026-114",
+      "subtotal": 56050.0,
+      "tax": 10089.0,
+      "total": 66139.0
+    },
+    "issues": [
+      "missing_field:date"
+    ],
+    "labels": {
+      "supplier": "Seller",
+      "total": "Grand Total",
+      "currency": "INR "
+    }
+  },
+  {
+    "file": "invoice_15_missing_date.pdf",
+    "kind": "missing_date",
+    "written": {
+      "supplier": "Meadow Office Mart",
+      "invoice_number": "INV-2026-115",
+      "subtotal": 47800.0,
+      "tax": 8604.0,
+      "total": 56404.0
+    },
+    "issues": [
+      "missing_field:date"
+    ],
+    "labels": {
+      "supplier": "Vendor",
+      "total": "Total Amount",
+      "currency": "INR "
+    }
+  },
+  {
+    "file": "invoice_16_missing_invoice_number.pdf",
+    "kind": "missing_invoice_number",
+    "written": {
+      "supplier": "Blue Harbor Logistics",
+      "date": "1 October 2026",
+      "subtotal": 73050.0,
+      "tax": 13149.0,
+      "total": 86199.0
+    },
+    "issues": [
+      "missing_field:invoice_number"
+    ],
+    "labels": {
+      "supplier": "Supplier",
+      "total": "Total Amount",
+      "currency": "Rs. "
+    }
+  },
+  {
+    "file": "invoice_17_missing_invoice_number.pdf",
+    "kind": "missing_invoice_number",
+    "written": {
+      "supplier": "Orchid Stationers",
+      "date": "12 October 2026",
+      "subtotal": 87800.0,
+      "tax": 15804.0,
+      "total": 103604.0
+    },
+    "issues": [
+      "missing_field:invoice_number"
+    ],
+    "labels": {
+      "supplier": "Seller",
+      "total": "Total Amount",
+      "currency": "Rs. "
+    }
+  },
+  {
+    "file": "invoice_18_missing_invoice_number.pdf",
+    "kind": "missing_invoice_number",
+    "written": {
+      "supplier": "Vega Packaging",
+      "date": "3 October 2026",
+      "subtotal": 48200.0,
+      "tax": 8676.0,
+      "total": 56876.0
+    },
+    "issues": [
+      "missing_field:invoice_number"
+    ],
+    "labels": {
+      "supplier": "Vendor",
+      "total": "Total",
+      "currency": ""
+    }
+  },
+  {
+    "file": "invoice_19_missing_supplier.pdf",
+    "kind": "missing_supplier",
+    "written": {
+      "invoice_number": "INV-2026-119",
+      "date": "28 October 2026",
+      "subtotal": 41800.0,
+      "tax": 7524.0,
+      "total": 49324.0
+    },
+    "issues": [
+      "missing_field:supplier"
+    ],
+    "labels": {
+      "supplier": "Supplier",
+      "total": "Total",
+      "currency": ""
+    }
+  },
+  {
+    "file": "invoice_20_missing_supplier.pdf",
+    "kind": "missing_supplier",
+    "written": {
+      "invoice_number": "INV-2026-120",
+      "date": "17 October 2026",
+      "subtotal": 12900.0,
+      "tax": 2322.0,
+      "total": 15222.0
+    },
+    "issues": [
+      "missing_field:supplier"
+    ],
+    "labels": {
+      "supplier": "Seller",
+      "total": "Total",
+      "currency": "INR "
+    }
+  },
+  {
+    "file": "invoice_21_total_mismatch.pdf",
+    "kind": "total_mismatch",
+    "written": {
+      "supplier": "Lotus Hardware",
+      "invoice_number": "INV-2026-121",
+      "date": "13 October 2026",
+      "subtotal": 83150.0,
+      "tax": 14967.0,
+      "total": 99117.0
+    },
+    "issues": [
+      "total_mismatch"
+    ],
+    "labels": {
+      "supplier": "Vendor",
+      "total": "Grand Total",
+      "currency": "INR "
+    }
+  },
+  {
+    "file": "invoice_22_total_mismatch.pdf",
+    "kind": "total_mismatch",
+    "written": {
+      "supplier": "Vega Packaging",
+      "invoice_number": "INV-2026-122",
+      "date": "19 October 2026",
+      "subtotal": 27450.0,
+      "tax": 4941.0,
+      "total": 32891.0
+    },
+    "issues": [
+      "total_mismatch"
+    ],
+    "labels": {
+      "supplier": "Supplier",
+      "total": "Grand Total",
+      "currency": "Rs. "
+    }
+  },
+  {
+    "file": "invoice_23_total_mismatch.pdf",
+    "kind": "total_mismatch",
+    "written": {
+      "supplier": "Aster Supplies",
+      "invoice_number": "INV-2026-123",
+      "date": "19 October 2026",
+      "subtotal": 53500.0,
+      "tax": 9630.0,
+      "total": 63380.0
+    },
+    "issues": [
+      "total_mismatch"
+    ],
+    "labels": {
+      "supplier": "Seller",
+      "total": "Grand Total",
+      "currency": "Rs. "
+    }
+  },
+  {
+    "file": "invoice_24_total_mismatch.pdf",
+    "kind": "total_mismatch",
+    "written": {
+      "supplier": "Meadow Office Mart",
+      "invoice_number": "INV-2026-124",
+      "date": "27 October 2026",
+      "subtotal": 79400.0,
+      "tax": 14292.0,
+      "total": 93942.0
+    },
+    "issues": [
+      "total_mismatch"
+    ],
+    "labels": {
+      "supplier": "Vendor",
+      "total": "Total Amount",
+      "currency": ""
+    }
+  }
+]

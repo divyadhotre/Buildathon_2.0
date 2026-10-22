@@ -44,7 +44,7 @@
 
 ## 1. Overview
 
-DocuSure AI is a proposed AI-assisted document verification and approval system designed to help teams review invoices through a structured, evidence-driven workflow.
+DocuSure AI is an AI-assisted document verification and approval system for reviewing business documents through a structured, evidence-driven workflow. Invoice checks are a specialized ruleset; other and unfamiliar document types can still be uploaded, classified where possible, inspected, and reviewed.
 
 The system aims to combine document text extraction, structured field identification, deterministic verification rules, reviewer corrections, version history, role-based decisions, and evidence-grounded GenAI explanations in one workflow.
 
@@ -59,7 +59,7 @@ Rather than treating a document as simply valid or invalid, DocuSure AI is desig
 
 **Core principle:** AI assists verification; authorized humans retain control over approval and rejection.
 
-The initial implementation will focus on invoice verification to keep the prototype specific, testable, and feasible within the buildathon.
+The intake and review workflow is document-type agnostic. Deterministic invoice checks run only when the document is confidently classified as an invoice; the system does not apply invoice requirements to unrelated documents.
 
 ## 2. Problem Statement
 
@@ -87,24 +87,24 @@ Build a system that can:
 10. Generate grounded explanations or correction messages using stored evidence.
 11. Introduce a team-designed innovation and evaluate its value.
 
-DocuSure AI is being designed around these requirements, with invoice verification as its first use case.
+DocuSure AI implements this workflow for common business documents, with invoice arithmetic and required-field checks as its first specialized ruleset.
 
 ## 3. Our Proposed Solution
 
-DocuSure AI will transform invoice verification into a traceable, step-by-step process.
+DocuSure AI provides a traceable review workflow for uploaded documents, with specialized invoice verification where the evidence supports it.
 
 ### Proposed workflow
 
 **Upload → Extract → Verify → Review → Correct → Decide → Track**
 
-1. **Upload:** A submitter uploads an invoice.
-2. **Extract:** The system attempts to extract relevant text and fields.
-3. **Verify:** Configured rules check required fields, amount consistency, and possible duplicates.
+1. **Upload:** A submitter uploads a PDF, PNG/JPG/JPEG, TXT, or DOCX document. Type selection is not required.
+2. **Extract:** The system extracts document text and type-aware invoice, purchase order, receipt, or contract fields, while retaining generic labelled fields.
+3. **Verify:** Configured checks run only when supported by the detected type and available evidence.
 4. **Review:** A reviewer inspects flagged issues alongside the available evidence.
 5. **Correct:** Incorrect extracted values can be corrected, or the submitter can be asked to provide a revised document.
 6. **Track:** Original files, versions, extraction results, corrections, and review events are retained.
 7. **Decide:** An authorized approver makes the final decision and records a reason.
-8. **Explain:** A local language model may generate an explanation or correction message grounded in the current stored evidence.
+8. **Explain:** Optional Gemini assistance analyzes bounded extracted text, fields, and verification evidence; it can withhold an action when no safe recommendation is supported.
 
 A failed extraction, unreadable document, or incomplete check must not be treated as successful verification. Processing failures should be surfaced for review rather than resulting in automatic approval.
 
@@ -114,22 +114,25 @@ The following features describe the intended product. Their implementation statu
 
 ### 4.1 Document intake
 
-- Upload invoice documents.
-- Validate supported file types and file size.
+- Upload PDF, PNG, JPG, JPEG, TXT, and DOCX documents without requiring a fixed category.
+- Validate actual file content, supported file type, and file size.
 - Store uploaded documents for processing.
 - Associate uploads with a request and version.
 - Provide understandable errors for unsupported or unreadable files.
 
 ### 4.2 OCR and structured extraction
 
-- Extract text from supported PDFs and images.
-- Identify relevant invoice fields, such as:
+- Extract text from digital PDFs, plain text, and DOCX files; use Tesseract for scanned PDF pages and supported images.
+- Detect common document types from text while keeping unknown documents available for review.
+- Extract common structured fields for invoices, purchase orders, receipts, and contracts, retaining generic labelled fields as additional evidence.
+- Identify relevant transaction fields, such as:
   - Supplier name
-  - Invoice number
-  - Invoice date
+  - Invoice, purchase order, or transaction number and date
   - Subtotal
   - Tax
   - Total amount
+  - Readable line items, quantities, and prices
+- Identify contract parties, dates, values, payment terms, and clearly worded obligations when present.
 - Retain the original extracted values.
 - Make uncertain or missing fields visible to reviewers.
 
@@ -160,6 +163,9 @@ The following features describe the intended product. Their implementation statu
 ### 4.6 Approval workflow
 
 - Separate submission, review, and approval responsibilities.
+- A reviewer records an approval or rejection recommendation; the request then moves to the approver queue for the final decision.
+- Require an override reason when the approver's final decision differs from the reviewer's recommendation.
+- Support correction requests that return to the submitter; a resubmission creates a new version on the same request and restarts review.
 - Support approval or rejection by authorized users.
 - Require a decision reason where applicable.
 - Prevent submitters from approving their own requests.
@@ -335,7 +341,7 @@ The local LLM is intended to assist with explanations, not replace deterministic
 | SQLAlchemy | Database models and ORM |
 | Tesseract OCR | OCR for supported scanned documents and images |
 | PyMuPDF | PDF text extraction, where needed |
-| Local LLM | Grounded explanations and correction-message drafts |
+| Gemini API (optional) | Evidence-grounded reviewer suggestions |
 | Git and GitHub | Version control, collaboration, and project tracking |
 
 ### Why this stack?
@@ -346,7 +352,7 @@ The local LLM is intended to assist with explanations, not replace deterministic
 - **Local prototype:** SQLite reduces setup complexity during the buildathon.
 - **Human oversight:** A reviewer-facing workflow avoids treating model output as an automatic final decision.
 
-The exact local LLM runtime and model are still to be finalized. The repository will document the chosen setup after it is tested.
+AI assistance can use the configured `GEMINI_MODEL`; without `GEMINI_API_KEY`, the application provides a clearly labelled local evidence summary rather than failing or claiming that Gemini ran.
 
 ---
 
@@ -599,29 +605,22 @@ DocuSure AI will communicate these limitations and rely on authorized human revi
 
 ## 16. Current Implementation Status
 
-**Current status: Initial project scaffold prepared; functional implementation has not started yet.**
+The repository contains a working document-review prototype. The dashboard, review queue, document detail, audit history, measured evaluation report, and settings read from backend data or configuration rather than using demonstration-only records.
 
-The repository structure and technical plan provide the starting point for parallel development. Functional capabilities will be marked implemented only after they have been built and tested.
+| Component | Current status |
+|---|---|
+| PDF, PNG/JPG/JPEG, TXT, and DOCX upload | Implemented with format and size validation |
+| PDF, TXT, and DOCX text extraction; image/scanned-page OCR | Implemented; scanned content requires a local Tesseract installation |
+| Document classification | Implemented for common patterns, with an unknown/generic path |
+| Structured extraction | Type-aware invoice, purchase order, receipt, and contract fields plus generic labelled fields |
+| Deterministic verification | Invoice/PO/receipt arithmetic and required-field checks; contract metadata and obligation coverage findings |
+| Human review, field corrections, and decisions | Implemented with role checks and audit events |
+| AI suggestions | Optional Gemini integration uses bounded text and evidence; unsupported actions are withheld |
+| Dashboard, repository, review queue, and audit | Connected to persisted API data |
+| Evaluation report | Reads measured test-run results and real review-time samples |
+| Authentication | Demo identity headers only; not production authentication |
 
-| Component | Current status | Next milestone |
-|---|---|---|
-| Project folder structure | Prepared locally | Commit and push initial scaffold |
-| README and design documentation | Initial draft prepared | Update alongside implementation |
-| React frontend | Starter scaffold present | Build and test invoice dashboard and review screens |
-| FastAPI backend | Starter scaffold present | Implement and test required endpoints |
-| Database models | Starter foundation present | Implement and verify request, document, and review relationships |
-| Document upload and versioning | Planned | Store files safely and retain version history |
-| OCR and PDF text extraction | Planned | Test extraction on sample invoices |
-| Structured field extraction | Planned | Extract and validate required invoice fields |
-| Verification rules | Planned | Implement required-field and amount checks |
-| Duplicate detection | Planned | Implement and test possible duplicate matching |
-| Evidence-linked flags | Planned | Link results to fields and supporting evidence |
-| Human review and corrections | Planned | Persist corrections and review events |
-| Approval and rejection | Planned | Enforce role permissions and decision audit trail |
-| Dashboard and search | Starter UI may contain sample data | Connect to persisted application data |
-| Local LLM explanations | Planned | Integrate the selected local model and validate grounded responses |
-| Automated tests and evaluation | Planned | Add representative test cases and report measured results |
-| End-to-end workflow | Planned | Test upload through final human decision |
+AI output remains advisory and does not alter request status or replace human decisions. Submitters can request an analysis of their own upload but still cannot make the final decision. For an unfamiliar document type or unsupported check, Gemini can explain the available evidence while withholding a decision action; without a key, the local evidence summary keeps that workflow usable.
 
 ### Progress policy
 
@@ -713,7 +712,7 @@ These instructions describe the intended development environment. Commands may n
 - Node.js and npm.
 - Git.
 - Tesseract OCR installed separately if OCR is enabled.
-- A compatible local LLM runtime and model if GenAI is enabled.
+- An optional Gemini API key (`GEMINI_API_KEY`) for AI suggestions.
 
 ### 1. Clone the repository
 
@@ -773,14 +772,18 @@ Open the local URL printed by Vite in the terminal.
 
 ### 4. Configure local services
 
-- Install Tesseract OCR and configure its executable path if it is not available on the system PATH.
-- Install and test the selected local LLM runtime and model before enabling explanation generation.
+- Install Tesseract OCR and make it available on `PATH`, or set `TESSERACT_CMD`, for scanned PDFs and image uploads.
+- To enable Gemini suggestions, copy `backend/.env.example` to `backend/.env` and set `GEMINI_API_KEY`. The template uses `gemini-3.8-flash`; check the model ID and quota for the Google project that owns the key. Without a key, the app displays a clearly labelled local evidence summary instead.
 - Keep local settings and secrets in environment files that are excluded from Git.
 - Use synthetic invoice documents during development and demonstration.
 
+After changing `backend/.env`, restart Uvicorn. For AI errors, `401`/`403` indicate key or permission issues, `404` indicates an unavailable model ID, and `429` indicates a rate or quota limit. A `503` mentioning DNS, timeout, TLS, or an OS error points to the backend machine's network, proxy, or firewall; it is not fixed by deleting requests or replacing a key in the same project.
+
+Run the focused backend tests from `backend` with `python -m pytest tests -q`. Run the frontend production build from `frontend` with `npm run build`.
+
 ### Setup status
 
-The repository currently contains a starter scaffold. The full upload, extraction, verification, database, authentication, and approval workflow must be implemented and tested before the setup can be described as a complete end-to-end application.
+The repository contains a working prototype for PDF/image/TXT/DOCX upload, generic document extraction, type-gated verification, role-guarded review decisions, audit history, and optional Gemini suggestions. OCR for scanned documents depends on a local Tesseract installation, and demo role headers are not production authentication.
 
 ---
 
