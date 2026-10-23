@@ -2,12 +2,20 @@
 ### Evidence-First Document Verification & Approval System
 
 
-<p align="center">
-  <img src="docs/screenshots/review.png" alt="DocuVerify AI - Document Review Dashboard" width="800">
-</p>
+## Project Screenshots
+
+### 1. Document Review Dashboard
+Review extracted invoice details, inspect verification findings, and examine supporting evidence before making an approval decision.
 
 <p align="center">
-  <img src="docs/screenshots/audit.png" alt="DocuVerify AI - Audit Dashboard" width="800">
+  <img src="docs/screenshots/review.png" alt="DocuVerify AI Document Review Dashboard" width="800">
+</p>
+
+### 2. Audit Trail Dashboard
+View document-related activities and maintain a traceable history of verification and review actions.
+
+<p align="center">
+  <img src="docs/screenshots/audit.png" alt="DocuVerify AI Audit Trail Dashboard" width="800">
 </p>
 
 ---
