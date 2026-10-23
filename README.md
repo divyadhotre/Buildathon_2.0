@@ -1,6 +1,17 @@
 ﻿# DocuVerify AI
 ### Evidence-First Document Verification & Approval System
 
+
+<p align="center">
+  <img src="docs/screenshots/review.png" alt="DocuVerify AI - Document Review Dashboard" width="800">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/audit.png" alt="DocuVerify AI - Audit Dashboard" width="800">
+</p>
+
+---
+
 **GitHub Repository:** https://github.com/divyadhotre/Buildathon_2.0
 
 **Team:** DayBreak  
@@ -20,7 +31,7 @@
 - [2. Problem Statement](#2-problem-statement)
 - [3. Our Proposed Solution](#3-our-proposed-solution)
 - [4. Key Features](#4-key-features)
-- [5. What Makes DocuVerify AI Different](#5-what-makes-doc usure-ai-different)
+- [5. What Makes DocuVerify AI Different](#5-what-makes-docuverify-ai-different)
 - [6. End-to-End Workflow](#6-end-to-end-workflow)
 - [7. System Architecture](#7-system-architecture)
 - [8. Technology Stack](#8-technology-stack)
