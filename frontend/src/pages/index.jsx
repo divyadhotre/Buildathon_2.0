@@ -406,6 +406,7 @@ function ReviewDetail({ id, ctx }) {
   const [busy, setBusy] = useState(false);
   const [edit, setEdit] = useState(null);
   const [aiBusy, setAiBusy] = useState(false);
+  const [reprocessBusy, setReprocessBusy] = useState(false);
   const [aiErr, setAiErr] = useState("");
   const [openedAt] = useState(() => Date.now());
 
@@ -487,6 +488,21 @@ function ReviewDetail({ id, ctx }) {
     } finally { setAiBusy(false); }
   }
 
+  async function reprocess() {
+    if (!invDoc?.id) return;
+    setReprocessBusy(true);
+    try {
+      await api.reprocessDocument(id, invDoc.id);
+      await load();
+      ctx.reload();
+      ctx.notify("Document reprocessed. Extraction, verification, and AI context were refreshed.");
+    } catch (e) {
+      ctx.notify(e.message);
+    } finally {
+      setReprocessBusy(false);
+    }
+  }
+
   async function saveEdit() {
     if (!edit.reason.trim()) return ctx.notify("Add a reason for the correction.");
     try { await api.correctField(id, edit.name, edit.value, edit.reason.trim()); setEdit(null); await load(); ctx.notify("Correction saved. Original value is kept."); }
@@ -515,7 +531,16 @@ function ReviewDetail({ id, ctx }) {
           <summary>View extracted text evidence</summary>
           <pre>{d.extracted_text}</pre>
         </details>}
-        {failed && <div className="notice err"><AlertCircle size={18} /><span>Extraction failed. Retry on the backend or review manually. Approval is disabled.</span></div>}
+        {failed && <div className="notice err"><AlertCircle size={18} /><span>Extraction failed: {d.processing_error || "review the original document manually"}. Approval is disabled.</span></div>}
+        {reviewerStage && !own && invDoc && (
+          <button
+            className="ghost"
+            disabled={reprocessBusy}
+            onClick={reprocess}
+          >
+            {reprocessBusy ? "Reprocessing document…" : "Reprocess latest document"}
+          </button>
+        )}
 
         <h3>Original document</h3>
         <div className="preview">
@@ -558,7 +583,7 @@ function ReviewDetail({ id, ctx }) {
                 <tr key={f.name} className="static">
                   <td>{f.name}</td><td>{orig ?? <em className="muted-text">missing</em>}</td>
                   <td>{editing ? <input value={edit.value} onChange={(e) => setEdit({ ...edit, value: e.target.value })} /> : <strong className={changed ? "changed" : ""}>{f.value ?? "—"}</strong>}</td>
-                  <td>{pct(f.confidence)}</td><td>{src(f)}</td>
+                  <td>{pct(f.confidence)}{f.status === "uncertain" && <small className="field-status">Uncertain; confirm against the original</small>}{f.status === "not_found" && <small className="field-status">Not found in available text</small>}</td><td>{src(f)}</td>
                   <td>{f.snippet ? <details className="field-evidence"><summary>View source</summary><pre>{f.snippet}</pre></details> : "—"}</td>
                   <td>{editing ? (<div className="inline-edit"><input placeholder="Reason" value={edit.reason} onChange={(e) => setEdit({ ...edit, reason: e.target.value })} />
                     <button className="text-button" onClick={saveEdit}>Save</button><button className="text-button" onClick={() => setEdit(null)}>Cancel</button></div>)
@@ -592,7 +617,7 @@ function ReviewDetail({ id, ctx }) {
         {aiBusy ?         <p className="muted-text">AI is reviewing the available document text, extracted fields and checks…</p>
           : ai ? (
             <div className={`ai-box ${ai.unavailable ? "ai-unavailable" : ""}`}>
-              <strong>{ai.unavailable ? "AI review unavailable" : ai.suggestion_available
+              <strong>{ai.stale ? "AI suggestion is out of date" : ai.unavailable ? "AI review unavailable" : ai.suggestion_available
                 ? ai.decision
                   ? `Suggested: ${ai.decision.replaceAll("_", " ")}`
                   : ai.model?.startsWith("Built-in")

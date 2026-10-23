@@ -56,8 +56,14 @@ MAX_FIELD_TEXT = 500
 MAX_EVIDENCE_TEXT = 300
 MAX_DOCUMENT_TEXT = 6000
 SUPPORTED_DOCUMENT_TYPES = {
-    "invoice", "purchase_order", "receipt", "contract", "certificate", "unknown",
+    "invoice", "purchase_order", "receipt", "contract", "certificate",
+    "bank_statement", "income_tax_document", "unknown",
 }
+SENSITIVE_FIELD_NAMES = {
+    "account_number", "taxpayer_id", "tax_id", "tin", "pan", "ssn",
+    "social_security_number", "iban", "routing_number",
+}
+SENSITIVE_PERSON_FIELD_NAMES = {"account_holder", "taxpayer_name"}
 
 
 class SuggestionError(Exception):
@@ -86,6 +92,32 @@ def _short_text(value: Any, limit: int) -> str | None:
     return text[:limit] if text else None
 
 
+def _mask_identifier(value: Any) -> Any:
+    if isinstance(value, str):
+        compact = re.sub(r"\s+", "", value)
+        return f"***{compact[-4:]}" if len(compact) > 4 else "***"
+    return value
+
+
+def _redact_sensitive_text(value: str) -> str:
+    person_label = r"(?:account\s+holder|account\s+name|taxpayer\s+name|assessee\s+name)"
+    value = re.sub(
+        rf"(?im)^([^\n]*{person_label}[^\n:]*:\s*)([^\n]+)$",
+        r"\1[REDACTED]",
+        value,
+    )
+    label = (
+        r"(?:account\s*(?:number|no\.?)|taxpayer\s+(?:id|identification)|"
+        r"tax\s+(?:id|identification\s+number)|social\s+security\s+number|"
+        r"\bssn\b|\bpan\b|\btin\b|\biban\b|routing\s+number)"
+    )
+    return re.sub(
+        rf"(?im)^([^\n]*{label}[^\n:]*:\s*)([^\n]+)$",
+        lambda match: match.group(1) + str(_mask_identifier(match.group(2).strip())),
+        value,
+    )
+
+
 def _field_value(value: Any) -> Any:
     if isinstance(value, list):
         safe_values = []
@@ -108,6 +140,7 @@ def _field_value(value: Any) -> Any:
 
 def _field_record(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
+        corrected = "corrected_value" in value
         evidence = value.get("evidence")
         if isinstance(evidence, dict):
             evidence = {
@@ -125,16 +158,47 @@ def _field_record(value: Any) -> dict[str, Any]:
             confidence = None
         elif confidence is not None:
             confidence = min(1.0, max(0.0, float(confidence)))
+        field_value = value.get("corrected_value") if corrected else value.get("value")
+        status = (
+            "reviewer_corrected"
+            if corrected
+            else _short_text(value.get("status"), 40)
+            or ("extracted" if field_value is not None else "not_found")
+        )
         return {
-            "value": _field_value(value.get("value")),
+            "value": _field_value(field_value),
+            "candidate": (
+                _field_value(value.get("candidate"))
+                if status == "uncertain"
+                else None
+            ),
+            "status": status,
             "confidence": confidence,
-            "evidence": evidence,
-            "source": _short_text(value.get("source"), 80),
+            "evidence": None if corrected else evidence,
+            "original_value": (
+                _field_value(value.get("original_value", value.get("value")))
+                if corrected else None
+            ),
+            "original_evidence": evidence if corrected else None,
+            "correction_reason": (
+                _short_text(value.get("correction_reason"), 500)
+                if corrected else None
+            ),
+            "source": (
+                "reviewer_correction"
+                if corrected
+                else _short_text(value.get("source"), 80)
+            ),
         }
     return {
         "value": _field_value(value),
+        "candidate": None,
+        "status": "extracted" if value is not None else "not_found",
         "confidence": None,
         "evidence": None,
+        "original_value": None,
+        "original_evidence": None,
+        "correction_reason": None,
         "source": None,
     }
 
@@ -175,6 +239,7 @@ def _findings(result: Any) -> list[dict[str, Any]]:
             "status": _short_text(finding.get("status"), 40) or "inconclusive",
             "category": _short_text(finding.get("category"), 60),
             "message": _short_text(finding.get("message"), 500),
+            "candidate": _field_value(finding.get("candidate")),
             "expected_total": _safe_finding_value(finding.get("expected_total")),
             "observed_total": _safe_finding_value(finding.get("observed_total")),
             "difference": _safe_finding_value(finding.get("difference")),
@@ -215,12 +280,41 @@ def build_context(document: Any, po: Any = None) -> dict[str, Any]:
         str(name)[:100]: _field_record(value)
         for name, value in list(raw_fields.items())[:100]
     }
+    for name, field in fields.items():
+        if name.lower() in SENSITIVE_PERSON_FIELD_NAMES:
+            for key in ("value", "candidate", "original_value"):
+                if field.get(key) is not None:
+                    field[key] = "[REDACTED]"
+            for key in ("evidence", "original_evidence"):
+                evidence = field.get(key)
+                if isinstance(evidence, dict):
+                    evidence["snippet"] = _redact_sensitive_text(
+                        evidence.get("snippet") or ""
+                    )
+                elif isinstance(evidence, str):
+                    field[key] = _redact_sensitive_text(evidence)
+        if name.lower() in SENSITIVE_FIELD_NAMES:
+            for key in ("value", "candidate", "original_value"):
+                field[key] = _mask_identifier(field.get(key))
+            for key in ("evidence", "original_evidence"):
+                evidence = field.get(key)
+                if isinstance(evidence, dict):
+                    evidence["snippet"] = _redact_sensitive_text(
+                        evidence.get("snippet") or ""
+                    )
+                elif isinstance(evidence, str):
+                    field[key] = _redact_sensitive_text(evidence)
     verification = getattr(document, "verification_result", None)
     verification = verification if isinstance(verification, dict) else {}
     findings = _findings(verification)
 
     missing_fields = [
-        name for name, field in fields.items() if field.get("value") is None
+        name for name, field in fields.items()
+        if field.get("status") == "not_found"
+    ]
+    uncertain_fields = [
+        name for name, field in fields.items()
+        if field.get("status") == "uncertain"
     ]
     actionable_missing = [
         {
@@ -279,6 +373,8 @@ def build_context(document: Any, po: Any = None) -> dict[str, Any]:
     if not isinstance(extraction_status, str):
         extraction_status = "unknown"
     return {
+        "document_id": _safe_finding_value(getattr(document, "id", None)),
+        "request_id": _safe_finding_value(getattr(document, "request_id", None)),
         "document_type": {
             "value": document_type,
             "classification_confidence": classification_confidence,
@@ -287,10 +383,11 @@ def build_context(document: Any, po: Any = None) -> dict[str, Any]:
             ),
         },
         "extraction_status": extraction_status,
-        "document_text": extracted_text[:MAX_DOCUMENT_TEXT],
+        "document_text": _redact_sensitive_text(extracted_text)[:MAX_DOCUMENT_TEXT],
         "document_text_truncated": len(extracted_text) > MAX_DOCUMENT_TEXT,
         "fields": fields,
         "missing_or_unavailable_fields": missing_fields,
+        "uncertain_fields": uncertain_fields,
         "verification_status": _short_text(verification.get("status"), 60) or "unknown",
         "verification_findings": findings,
         "actionable_missing_information": actionable_missing,
@@ -319,7 +416,8 @@ def build_prompt(ctx: dict[str, Any]) -> str:
         "- Use only the supplied facts. Never invent fields, errors, dates, totals, clauses, "
         "or evidence.\n"
         "- Distinguish confirmed errors (flagged with evidence), missing information, "
-        "warnings, uncertain findings, and checks marked not_performed.\n"
+        "uncertain field candidates, warnings, and checks marked not_performed. "
+        "Respect each field's status; do not turn an uncertain candidate into a confirmed value.\n"
         "- Do not treat missing optional fields or checks not performed as confirmed errors.\n"
         "- A document is not invalid solely because a check could not be performed.\n"
         "- Recommend request_correction only when supplied evidence identifies specific "

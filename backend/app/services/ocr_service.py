@@ -31,33 +31,55 @@ MAX_DOCX_XML_BYTES = 20 * 1024 * 1024
 # Safety limit for this initial prototype.
 MAX_PDF_PAGES = 100
 
-TESSERACT_EXE = Path(
-    os.getenv("TESSERACT_CMD") or shutil.which("tesseract")
-    or r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+DEFAULT_TESSERACT_EXE = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+
+
+def _resolve_tesseract_executable() -> Path:
+    configured = os.getenv("TESSERACT_CMD")
+    if configured:
+        return Path(configured)
+    on_path = shutil.which("tesseract")
+    return Path(on_path) if on_path else DEFAULT_TESSERACT_EXE
 
 
 def configure_tesseract() -> None:
     """Configure the installed Windows Tesseract executable."""
-    if not TESSERACT_EXE.is_file():
+    executable = _resolve_tesseract_executable()
+    if not executable.is_file():
         raise FileNotFoundError(
-            f"Tesseract executable not found: {TESSERACT_EXE}"
+            "Tesseract OCR is unavailable. Install it or set TESSERACT_CMD "
+            "to the executable's full path."
         )
 
-    pytesseract.pytesseract.tesseract_cmd = str(TESSERACT_EXE)
+    pytesseract.pytesseract.tesseract_cmd = str(executable)
 
 
 
 def _ocr_image(image: Image.Image) -> str:
     """Read printed English text from an image."""
     image = ImageOps.exif_transpose(image)
+    if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+        rgba = image.convert("RGBA")
+        background = Image.new("RGBA", rgba.size, "white")
+        image = Image.alpha_composite(background, rgba).convert("RGB")
+    else:
+        image = image.convert("RGB")
+
+    longest_side = max(image.size)
+    if longest_side < 1200:
+        scale = min(2.5, 1200 / longest_side)
+        image = image.resize(
+            (round(image.width * scale), round(image.height * scale)),
+            Image.Resampling.LANCZOS,
+        )
+
     image = ImageOps.grayscale(image)
     image = ImageOps.autocontrast(image)
 
     return pytesseract.image_to_string(
         image,
         lang="eng",
-        config="--psm 3",
+        config="--psm 6",
     ).strip()
 
 

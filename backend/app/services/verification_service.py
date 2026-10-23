@@ -14,6 +14,8 @@ INVOICE_CONFIDENCE_THRESHOLD = 0.65
 def _field_value(fields: dict[str, Any], name: str) -> Any:
     value = fields.get(name)
     if isinstance(value, dict):
+        if "corrected_value" in value:
+            return value["corrected_value"]
         if value.get("numeric_value") is not None:
             return value["numeric_value"]
         return value.get("value")
@@ -40,7 +42,22 @@ def _parse_amount(value: Any) -> float | None:
 def check_required_fields(fields: dict[str, Any]) -> list[dict[str, Any]]:
     findings = []
     for field in REQUIRED_FIELDS:
+        record = fields.get(field)
         value = _field_value(fields, field)
+        if isinstance(record, dict) and record.get("status") == "uncertain":
+            findings.append({
+                "rule_id": "required_field",
+                "field": field,
+                "status": "inconclusive",
+                "category": "uncertain_result",
+                "candidate": record.get("candidate") or record.get("value"),
+                "evidence": record.get("evidence"),
+                "message": (
+                    f"Required invoice field '{field}' has an uncertain candidate "
+                    "that must be confirmed by a human reviewer."
+                ),
+            })
+            continue
         if value is None or str(value).strip() == "":
             findings.append({
                 "rule_id": "required_field",
@@ -58,15 +75,24 @@ def check_total(
     total: float,
     tolerance: float = 0.02,
     evidence: dict[str, Any] | None = None,
+    discount: float = 0.0,
 ) -> dict[str, Any]:
-    if not all(math.isfinite(value) for value in (subtotal, tax, total)):
+    if not all(math.isfinite(value) for value in (subtotal, tax, total, discount)):
         return {
             "rule_id": "total_consistency",
             "status": "inconclusive",
             "category": "uncertain_result",
             "message": "Total consistency could not be performed because an extracted amount is outside the supported numeric range.",
         }
-    expected_sum = subtotal + tax
+    if discount < 0:
+        return {
+            "rule_id": "total_consistency",
+            "status": "inconclusive",
+            "category": "uncertain_result",
+            "evidence": evidence,
+            "message": "Total consistency could not be performed because the extracted discount is negative.",
+        }
+    expected_sum = subtotal + tax - discount
     if not math.isfinite(expected_sum):
         return {
             "rule_id": "total_consistency",
@@ -88,9 +114,18 @@ def check_total(
         "tolerance": tolerance,
         "evidence": evidence,
         "message": (
-            "Extracted subtotal plus tax matches the extracted total."
+            (
+                "Extracted subtotal plus tax less discount matches the extracted total."
+                if discount
+                else "Extracted subtotal plus tax matches the extracted total."
+            )
             if consistent
-            else "Confirmed total mismatch: extracted subtotal plus tax differs from the extracted total."
+            else (
+                "Confirmed total mismatch: extracted subtotal plus tax less discount "
+                "differs from the extracted total."
+                if discount
+                else "Confirmed total mismatch: extracted subtotal plus tax differs from the extracted total."
+            )
         ),
     }
 
@@ -99,33 +134,60 @@ def _invoice_findings(fields: dict[str, Any]) -> list[dict[str, Any]]:
     findings = check_required_fields(fields)
     amounts = {
         name: _parse_amount(_field_value(fields, name))
-        for name in ("subtotal", "tax", "total")
+        for name in ("subtotal", "tax", "discount", "total")
     }
-    if all(value is not None for value in amounts.values()):
-        findings.append(check_total(
-            subtotal=amounts["subtotal"],
-            tax=amounts["tax"],
-            total=amounts["total"],
-            evidence={
-                name: fields.get(name, {}).get("evidence")
-                for name in ("subtotal", "tax", "total")
-                if isinstance(fields.get(name), dict)
-                and fields[name].get("evidence")
-            },
-        ))
+    if all(amounts[name] is not None for name in ("subtotal", "tax", "total")):
+        discount_value = _field_value(fields, "discount")
+        if discount_value is not None and amounts["discount"] is None:
+            findings.append({
+                "rule_id": "total_consistency",
+                "status": "inconclusive",
+                "category": "uncertain_result",
+                "fields_unavailable": ["discount"],
+                "evidence": fields.get("discount", {}).get("evidence"),
+                "message": "Total consistency was not performed because the extracted discount is unreadable.",
+            })
+        else:
+            findings.append(check_total(
+                subtotal=amounts["subtotal"],
+                tax=amounts["tax"],
+                total=amounts["total"],
+                discount=amounts["discount"] or 0.0,
+                evidence={
+                    name: fields.get(name, {}).get("evidence")
+                    for name in ("subtotal", "tax", "discount", "total")
+                    if isinstance(fields.get(name), dict)
+                    and fields[name].get("evidence")
+                },
+            ))
     else:
         missing = [
             name for name in ("subtotal", "tax", "total")
             if amounts[name] is None
         ]
+        uncertain = [
+            name for name in ("subtotal", "tax", "discount", "total")
+            if isinstance(fields.get(name), dict)
+            and fields[name].get("status") == "uncertain"
+        ]
         findings.append({
             "rule_id": "total_consistency",
-            "status": "not_performed",
-            "category": "unavailable_evidence",
-            "fields_unavailable": missing,
+            "status": "inconclusive" if uncertain else "not_performed",
+            "category": "uncertain_result" if uncertain else "unavailable_evidence",
+            "fields_unavailable": sorted(set(missing + uncertain)),
+            "evidence": {
+                name: fields[name].get("evidence")
+                for name in uncertain
+                if fields[name].get("evidence")
+            } or None,
             "message": (
                 "Total consistency was not performed because "
-                f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} missing or unreadable."
+                f"{', '.join(uncertain)} {'is' if len(uncertain) == 1 else 'are'} ambiguous or unreadable."
+                if uncertain
+                else (
+                    "Total consistency was not performed because "
+                    f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} missing or unreadable."
+                )
             ),
         })
     items = _field_value(fields, "line_items")
@@ -334,6 +396,64 @@ def _contract_findings(fields: dict[str, Any]) -> list[dict[str, Any]]:
     return findings
 
 
+def _bank_statement_findings(fields: dict[str, Any]) -> list[dict[str, Any]]:
+    records = {
+        name: _parse_amount(_field_value(fields, name))
+        for name in (
+            "opening_balance", "total_credits", "total_debits", "closing_balance",
+        )
+    }
+    required = ("opening_balance", "total_credits", "total_debits", "closing_balance")
+    if all(records[name] is not None for name in required):
+        expected = round(
+            records["opening_balance"] + records["total_credits"] - records["total_debits"],
+            2,
+        )
+        observed = round(records["closing_balance"], 2)
+        difference = round(abs(expected - observed), 2)
+        return [{
+            "rule_id": "statement_balance_consistency",
+            "status": "pass" if difference <= 0.02 else "flag",
+            "category": "passed" if difference <= 0.02 else "confirmed_error",
+            "expected_balance": expected,
+            "observed_balance": observed,
+            "difference": difference,
+            "evidence": {
+                name: fields[name].get("evidence")
+                for name in required
+                if isinstance(fields.get(name), dict) and fields[name].get("evidence")
+            },
+            "message": (
+                "Opening balance plus credits less debits matches the closing balance."
+                if difference <= 0.02
+                else "Confirmed statement balance mismatch: opening balance plus credits less debits differs from the closing balance."
+            ),
+        }]
+    unavailable = [name for name in required if records[name] is None]
+    return [{
+        "rule_id": "statement_balance_consistency",
+        "status": "not_performed",
+        "category": "unavailable_evidence",
+        "fields_unavailable": unavailable,
+        "message": (
+            "Statement balance arithmetic was not performed because "
+            f"{', '.join(unavailable)} were not all readable from the document."
+        ),
+    }]
+
+
+def _income_tax_findings() -> list[dict[str, Any]]:
+    return [{
+        "rule_id": "tax_record_policy",
+        "status": "not_performed",
+        "category": "unavailable_evidence",
+        "message": (
+            "The document was classified as an income-tax record, but no jurisdiction-specific "
+            "tax compliance or authenticity rules are configured. Review the extracted evidence manually."
+        ),
+    }]
+
+
 def verify_document(extraction_result: dict[str, Any]) -> dict[str, Any]:
     """Run only checks supported by the classification and extracted evidence."""
     result = extraction_result if isinstance(extraction_result, dict) else {}
@@ -363,7 +483,10 @@ def verify_document(extraction_result: dict[str, Any]) -> dict[str, Any]:
         and confidence >= INVOICE_CONFIDENCE_THRESHOLD
     ):
         findings = _invoice_findings(fields)
-    elif document_type in {"purchase_order", "receipt", "contract", "certificate"} and confidence >= INVOICE_CONFIDENCE_THRESHOLD:
+    elif document_type in {
+        "purchase_order", "receipt", "contract", "certificate",
+        "bank_statement", "income_tax_document",
+    } and confidence >= INVOICE_CONFIDENCE_THRESHOLD:
         identification = {
             "rule_id": "document_type_identification",
             "status": "pass",
@@ -373,6 +496,10 @@ def verify_document(extraction_result: dict[str, Any]) -> dict[str, Any]:
         }
         if document_type in {"purchase_order", "receipt"}:
             findings = [identification, *_transaction_findings(fields, document_type)]
+        elif document_type == "bank_statement":
+            findings = [identification, *_bank_statement_findings(fields)]
+        elif document_type == "income_tax_document":
+            findings = [identification, *_income_tax_findings()]
         elif document_type == "contract":
             findings = [identification, *_contract_findings(fields)]
         else:

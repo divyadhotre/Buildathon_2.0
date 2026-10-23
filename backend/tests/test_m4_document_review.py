@@ -3,11 +3,12 @@ import json
 import socket
 import urllib.error
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import pymupdf as fitz
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from fastapi import HTTPException, UploadFile
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -25,8 +26,8 @@ from app.routers import requests as requests_router
 from app.routers import reviews as reviews_router
 from app.routers.documents import upload_document
 from app.routers.requests import create_request
-from app.routers.reviews import load_for_review, record_decision, stored_ai_suggestion
-from app.schemas import RequestCreate, ReviewDecision
+from app.routers.reviews import correct_field, load_for_review, record_decision, stored_ai_suggestion
+from app.schemas import FieldCorrection, RequestCreate, ReviewDecision
 from app.services import genai_service
 from app.services.extraction_service import classify_document, extract_fields
 from app.services import ocr_service
@@ -77,6 +78,30 @@ def _document(extraction=None, verification=None):
     )
 
 
+def _invoice_image_bytes(image_format):
+    font_path = Path(r"C:\Windows\Fonts\arial.ttf")
+    font = (
+        ImageFont.truetype(str(font_path), 46)
+        if font_path.is_file()
+        else ImageFont.load_default(size=46)
+    )
+    image = Image.new("RGB", (1800, 1050), "white")
+    draw = ImageDraw.Draw(image)
+    for index, line in enumerate((
+        "TAX INVOICE",
+        "Vendor: Acme Supplies",
+        "Invoice No: INV-TEST-1",
+        "Invoice Date: 10/23/2026",
+        "Subtotal: $100.00",
+        "Tax: $18.00",
+        "Total: $118.00",
+    )):
+        draw.text((100, 80 + index * 120), line, fill="black", font=font)
+    output = BytesIO()
+    image.save(output, format=image_format, quality=95)
+    return output.getvalue()
+
+
 def _gemini_response(action="approve", explanation="All available invoice checks passed."):
     return {
         "candidates": [{
@@ -100,6 +125,14 @@ def _gemini_response(action="approve", explanation="All available invoice checks
         ("PAYMENT RECEIPT\nAmount Paid: 20", "receipt"),
         ("SERVICE AGREEMENT\nThe parties agree", "contract"),
         ("CERTIFICATE OF COMPLETION\nHereby certifies", "certificate"),
+        (
+            "BANK STATEMENT\nStatement Period: 1 September 2026 to 30 September 2026",
+            "bank_statement",
+        ),
+        (
+            "INCOME TAX RETURN\nAssessment Year: 2025-26\nTaxable Income: 450000",
+            "income_tax_document",
+        ),
         ("Meeting notes for next week", "unknown"),
         (
             "The Perfect Match Invoice (Happy Path)\n"
@@ -131,10 +164,237 @@ def test_empty_and_malformed_extraction_are_safe():
     assert failed["findings"][0]["status"] == "not_performed"
 
 
+def test_bank_statement_extracts_statement_fields_without_invoice_rules():
+    text = (
+        "BANK STATEMENT\n"
+        "Account holder: Alex Example\n"
+        "Account number: 1234567890\n"
+        "Statement period start: 2026-09-01\n"
+        "Statement period end: 2026-09-30\n"
+        "Opening balance: $100.00\n"
+        "Total credits: $50.00\n"
+        "Total debits: $20.00\n"
+        "Closing balance: $130.00\n"
+        "2026-09-02 Grocery Store 20.00 DR 80.00\n"
+        "2026-09-03 Payroll Deposit 50.00 CR 130.00"
+    )
+    extracted = extract_fields({
+        "text": text,
+        "pages": [{"page_number": 1, "text": text}],
+    })
+    verification = verify_document(extracted)
+
+    assert extracted["document_type"] == "bank_statement"
+    assert extracted["fields"]["account_number"]["value"] == "1234567890"
+    assert extracted["fields"]["statement_start_date"]["value"] == "2026-09-01"
+    assert extracted["fields"]["statement_end_date"]["value"] == "2026-09-30"
+    transactions = extracted["fields"]["transactions"]["value"]
+    assert [item["direction"] for item in transactions] == ["debit", "credit"]
+    assert transactions[0]["description"] == "Grocery Store"
+    assert all(
+        finding["rule_id"] != "required_field"
+        for finding in verification["findings"]
+    )
+    balance_check = next(
+        finding for finding in verification["findings"]
+        if finding["rule_id"] == "statement_balance_consistency"
+    )
+    assert balance_check["status"] == "pass"
+    extracted["fields"]["closing_balance"]["value"] = "$131.00"
+    extracted["fields"]["closing_balance"]["numeric_value"] = 131.0
+    mismatch = next(
+        finding for finding in verify_document(extracted)["findings"]
+        if finding["rule_id"] == "statement_balance_consistency"
+    )
+    assert mismatch["status"] == "flag"
+    assert mismatch["difference"] == 1.0
+
+
+def test_income_tax_document_fields_are_classified_and_sensitive_ids_redacted():
+    text = (
+        "INCOME TAX RETURN\n"
+        "Taxpayer name: Alex Example\n"
+        "PAN: ABCDE1234F\n"
+        "Assessment year: 2025-26\n"
+        "Acknowledgement number: REF-1234\n"
+        "Taxable income: 450000\n"
+        "Tax paid: 20000"
+    )
+    extracted = extract_fields({
+        "text": text,
+        "pages": [{"page_number": 1, "text": text}],
+    })
+    verification = verify_document(extracted)
+    document = SimpleNamespace(
+        id=7,
+        request_id=3,
+        extracted_fields=extracted,
+        extracted_text=text,
+        verification_result=verification,
+    )
+    context = genai_service.build_context(document)
+
+    assert extracted["document_type"] == "income_tax_document"
+    assert extracted["fields"]["taxpayer_id"]["value"] == "ABCDE1234F"
+    assert extracted["fields"]["assessment_year"]["value"] == "2025-26"
+    assert all(
+        finding["rule_id"] != "required_field"
+        for finding in verification["findings"]
+    )
+    assert context["fields"]["taxpayer_id"]["value"] == "***234F"
+    assert context["fields"]["taxpayer_name"]["value"] == "[REDACTED]"
+    assert "ABCDE1234F" not in context["document_text"]
+    assert "Alex Example" not in context["document_text"]
+    assert "***234F" in context["document_text"]
+
+
 def test_complete_invoice_totals_pass():
     result = verify_document(_extracted_fields())
     assert result["status"] == "checks_passed"
     assert [finding["status"] for finding in result["findings"]] == ["pass"]
+
+
+def test_ocr_invoice_label_variants_keep_evidence_and_require_supplier_review():
+    text = (
+        "TAX INVOICE\n"
+        "Invoice No + INV-OCR-1\n"
+        "Issue Date 2026-10-23\n"
+        "Sub Total $100.00\n"
+        "Product line 1 $18.00\n"
+        "18% Tax/VAT $18.00\n"
+        "Total -| $118.00"
+    )
+    extracted = extract_fields({
+        "text": text,
+        "pages": [{"page_number": 1, "text": text}],
+    })
+    verification = verify_document(extracted)
+    fields = extracted["fields"]
+
+    assert extracted["document_type"] == "invoice"
+    assert fields["invoice_number"]["value"] == "INV-OCR-1"
+    assert fields["date"]["value"] == "2026-10-23"
+    assert fields["subtotal"]["value"] == "$100.00"
+    assert fields["tax"]["value"] == "18.00"
+    assert fields["total"]["value"] == "$118.00"
+    for field in ("invoice_number", "date", "subtotal", "tax", "total"):
+        assert fields[field]["evidence"]["page"] == 1
+        assert fields[field]["value"] in fields[field]["evidence"]["snippet"]
+    assert "Tax/VAT" in fields["tax"]["evidence"]["snippet"]
+    assert fields["supplier"]["value"] is None
+    assert verification["status"] == "needs_review"
+    assert verification["approval_decision"] == "human_review_required"
+    assert any(
+        finding["category"] == "missing_information"
+        and finding.get("field") == "supplier"
+        for finding in verification["findings"]
+    )
+
+
+def test_noisy_invoice_candidates_are_preserved_without_claiming_valid_values():
+    text = (
+        "INVOICE\n"
+        "YOUR COMPANY NAME BILLED TO\n"
+        "89 Your Company Street, City, State, Country Your Client Name\n"
+        "Invoice to 00001\n"
+        "Issue Date ans/2019\n"
+        "Due Date sa/2019\n"
+        "Sub Total $200.0\n"
+        "10% Tax/VAT $200.00\n"
+        "Discount ($2300)\n"
+        "TOTAL $2,177.00"
+    )
+    extracted = extract_fields({
+        "text": text,
+        "pages": [{"page_number": 1, "text": text}],
+    })
+    verification = verify_document(extracted)
+    fields = extracted["fields"]
+
+    assert fields["supplier"]["candidate"] == "YOUR COMPANY NAME"
+    assert fields["supplier"]["status"] == "uncertain"
+    assert fields["buyer"]["candidate"] == "Your Client Name"
+    assert fields["buyer"]["status"] == "uncertain"
+    assert fields["invoice_number"]["candidate"] == "00001"
+    assert fields["invoice_number"]["status"] == "uncertain"
+    assert fields["date"]["value"] is None
+    assert fields["date"]["candidate"] == "ans/2019"
+    assert fields["due_date"]["value"] is None
+    assert fields["due_date"]["candidate"] == "sa/2019"
+    assert fields["subtotal"]["value"] is None
+    assert fields["subtotal"]["candidate"] == "$200.0"
+    assert fields["discount"]["numeric_value"] is None
+    assert fields["discount"]["candidate"] == "($2300)"
+    assert fields["total"]["value"] == "$2,177.00"
+    for key in ("supplier", "buyer", "invoice_number", "date", "due_date", "subtotal", "discount", "total"):
+        evidence = fields[key]["evidence"]["snippet"]
+        assert evidence in text or evidence.splitlines()[0] in text
+    assert not any(finding["status"] == "flag" for finding in verification["findings"])
+    total_check = next(
+        finding for finding in verification["findings"]
+        if finding["rule_id"] == "total_consistency"
+    )
+    assert total_check["status"] == "inconclusive"
+    assert verification["approval_decision"] == "human_review_required"
+    context = genai_service.build_context(_document(extracted, verification))
+    assert context["fields"]["supplier"]["status"] == "uncertain"
+    assert context["fields"]["supplier"]["candidate"] == "YOUR COMPANY NAME"
+    assert "supplier" in context["uncertain_fields"]
+    assert "supplier" not in context["missing_or_unavailable_fields"]
+
+
+def test_invoice_party_labels_and_leading_zero_identifier_are_extracted():
+    text = (
+        "TAX INVOICE\n"
+        "Vendor: Northwind Components Ltd\n"
+        "Bill To: Contoso Retail Group\n"
+        "Invoice #: 000007\n"
+        "Issue Date: 2026-10-23\n"
+        "Due Date: 2026-11-22\n"
+        "Subtotal: $100.00\n"
+        "Tax: $18.00\n"
+        "Total: $118.00"
+    )
+    fields = extract_fields({
+        "text": text,
+        "pages": [{"page_number": 1, "text": text}],
+    })["fields"]
+
+    assert fields["supplier"]["value"] == "Northwind Components Ltd"
+    assert fields["buyer"]["value"] == "Contoso Retail Group"
+    assert fields["invoice_number"]["value"] == "000007"
+    assert fields["date"]["value"] == "2026-10-23"
+    assert fields["due_date"]["value"] == "2026-11-22"
+    assert fields["invoice_number"]["evidence"]["snippet"].find("000007") >= 0
+
+
+def test_invoice_discount_is_evidence_backed_in_total_verification():
+    text = (
+        "TAX INVOICE\n"
+        "Vendor: Northwind Supplies\n"
+        "Invoice No: INV-DISC-1\n"
+        "Issue Date: 2026-10-23\n"
+        "Subtotal: 2000.00\n"
+        "Tax: 200.00\n"
+        "Discount (s 23.00)\n"
+        "Total: 2177.00"
+    )
+    extracted = extract_fields({
+        "text": text,
+        "pages": [{"page_number": 1, "text": text}],
+    })
+    verification = verify_document(extracted)
+    consistency = next(
+        finding for finding in verification["findings"]
+        if finding["rule_id"] == "total_consistency"
+    )
+
+    assert extracted["fields"]["discount"]["numeric_value"] == 23.0
+    assert "Discount (s 23.00)" in extracted["fields"]["discount"]["evidence"]["snippet"]
+    assert consistency["status"] == "pass"
+    assert consistency["expected_total"] == 2177.0
+    assert "discount" in consistency["evidence"]
+    assert verification["status"] == "checks_passed"
 
 
 def test_missing_subtotal_or_tax_is_not_reported_as_total_mismatch():
@@ -789,6 +1049,120 @@ def test_latest_ai_failure_clears_prior_document_recommendation():
         engine.dispose()
 
 
+def test_field_correction_reverifies_and_invalidates_stale_ai_suggestion(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    text = (
+        "TAX INVOICE\nVendor: Acme Supplies\nInvoice No: INV-REVIEW-1\n"
+        "Issue Date: 2026-10-23\nSubtotal: 100.00\nTax: 18.00\nTotal: 120.00"
+    )
+    extracted = extract_fields({"text": text, "pages": [{"page_number": 1, "text": text}]})
+    verification = verify_document(extracted)
+    ai_contexts = []
+
+    def capture_suggestion(document, po=None):
+        ai_contexts.append(genai_service.build_context(document, po))
+        return {
+            "action": None,
+            "explanation": "The corrected total matches the current arithmetic checks.",
+            "key_findings": ["The corrected total is used for this review."],
+            "human_review_required": True,
+            "suggestion_available": True,
+            "model": "mocked-current-context",
+        }
+
+    monkeypatch.setattr(ai_router, "generate_suggestion", capture_suggestion)
+    try:
+        with Session(engine) as db:
+            request = ReviewRequest(
+                title="Corrected invoice",
+                status="under_review",
+                submitter="submitter-1",
+            )
+            db.add(request)
+            db.flush()
+            document = Document(
+                request_id=request.id,
+                original_filename="invoice.txt",
+                stored_filename="corrected-invoice.txt",
+                storage_path="invoice.txt",
+                mime_type="text/plain",
+                size_bytes=len(text),
+                sha256="4" * 64,
+                extracted_text=text,
+                extracted_fields=extracted,
+                verification_result=verification,
+            )
+            db.add(document)
+            db.flush()
+            document_id = document.id
+            request_id = request.id
+            db.add(AuditEvent(
+                request_id=request_id,
+                actor="gemini",
+                action="ai_suggestion_generated",
+                details={
+                    "document_id": document_id,
+                    "action": "request_correction",
+                    "explanation": "The extracted total conflicts with the source checks.",
+                },
+            ))
+            db.commit()
+
+        with Session(engine) as db:
+            correct_field(
+                request_id,
+                FieldCorrection(
+                    field="total",
+                    value="118.00",
+                    reason="The original invoice total is 118.00.",
+                ),
+                db,
+                ("reviewer-1", "reviewer"),
+            )
+            saved = db.get(Document, document_id)
+            total = saved.extracted_fields["fields"]["total"]
+            consistency = next(
+                finding for finding in saved.verification_result["findings"]
+                if finding["rule_id"] == "total_consistency"
+            )
+            context = genai_service.build_context(saved)
+            actions = list(db.scalars(
+                select(AuditEvent.action).where(AuditEvent.request_id == request_id)
+            ))
+
+            assert total["value"] == "120.00"
+            assert total["original_value"] == "120.00"
+            assert total["corrected_value"] == "118.00"
+            assert consistency["status"] == "pass"
+            assert saved.verification_result["status"] == "checks_passed"
+            assert context["fields"]["total"]["value"] == "118.00"
+            assert context["fields"]["total"]["original_value"] == "120.00"
+            assert context["fields"]["total"]["source"] == "reviewer_correction"
+            assert "ai_suggestion_invalidated" in actions
+            assert stored_ai_suggestion(db, request_id, document_id) is None
+            ai_router.create_ai_suggestion(
+                request_id,
+                db,
+                ("reviewer-1", "reviewer"),
+            )
+            assert ai_contexts[0]["fields"]["total"]["value"] == "118.00"
+            assert ai_contexts[0]["verification_findings"][0]["status"] != "flag"
+            suggestions = db.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.request_id == request_id,
+                    AuditEvent.action == "ai_suggestion_generated",
+                )
+            ).all()
+            assert any(
+                event.details.get("document_id") == document_id
+                for event in suggestions
+            )
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 def test_human_can_decide_when_ai_has_no_recommendation():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -1031,7 +1405,17 @@ def test_upload_route_returns_classification_and_document_specific_checks(monkey
         engine.dispose()
 
 
-def test_upload_route_accepts_supported_image_documents(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("filename", "image_format", "mime_type"),
+    [
+        ("certificate.png", "PNG", "image/png"),
+        ("certificate.jpg", "JPEG", "image/jpeg"),
+        ("certificate.jpeg", "JPEG", "image/jpeg"),
+    ],
+)
+def test_upload_route_accepts_supported_image_documents(
+    monkeypatch, tmp_path, filename, image_format, mime_type
+):
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -1058,9 +1442,246 @@ def test_upload_route_accepts_supported_image_documents(monkeypatch, tmp_path):
             "pages": [{"page_number": 1, "text": text}],
         },
     )
+
     try:
         with Session(engine) as db:
             request = ReviewRequest(title="Membership document", submitter="owner", status="submitted")
+            db.add(request)
+            db.commit()
+            request_id = request.id
+
+        image = BytesIO()
+        Image.new("RGB", (20, 20), "white").save(image, format=image_format)
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/requests/{request_id}/documents",
+                headers={"X-User": "owner", "X-Role": "submitter"},
+                files={"file": (filename, image.getvalue(), mime_type)},
+            )
+
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["mime_type"] == mime_type
+        assert payload["extracted_fields"]["document_type"] == "certificate"
+        assert payload["extracted_fields"]["fields"]["member"]["value"] == "Ada Example"
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+@pytest.mark.skipif(
+    not ocr_service._resolve_tesseract_executable().is_file(),
+    reason="Real image OCR requires a local Tesseract executable.",
+)
+def test_small_transparent_invoice_image_is_upscaled_before_ocr():
+    ocr_service.configure_tesseract()
+    image = Image.open(BytesIO(_invoice_image_bytes("PNG")))
+    image = image.resize((460, 268), Image.Resampling.LANCZOS).convert("RGBA")
+    text = ocr_service._ocr_image(image)
+    extracted = extract_fields({
+        "text": text,
+        "pages": [{"page_number": 1, "text": text}],
+    })
+    fields = extracted["fields"]
+
+    assert "Invoice No" in text
+    assert fields["supplier"]["value"] == "Acme Supplies"
+    assert fields["invoice_number"]["value"] == "INV-TEST-1"
+    assert fields["date"]["value"] == "10/23/2026"
+    assert fields["total"]["value"] == "$118.00"
+    assert fields["total"]["value"] in fields["total"]["evidence"]["snippet"]
+
+
+@pytest.mark.skipif(
+    not ocr_service._resolve_tesseract_executable().is_file(),
+    reason="Real image OCR requires a local Tesseract executable.",
+)
+@pytest.mark.parametrize(
+    ("filename", "image_format", "mime_type"),
+    [
+        ("invoice.png", "PNG", "image/png"),
+        ("invoice.jpg", "JPEG", "image/jpeg"),
+        ("invoice.jpeg", "JPEG", "image/jpeg"),
+    ],
+)
+def test_real_invoice_image_ocr_is_extracted_and_persisted(
+    monkeypatch, tmp_path, filename, image_format, mime_type
+):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    app = FastAPI()
+    app.include_router(documents_router.router)
+
+    def override_db():
+        with Session(engine) as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
+    monkeypatch.setattr(documents_router, "_store_ai_review", lambda *args: None)
+    try:
+        with Session(engine) as db:
+            request = ReviewRequest(
+                title="OCR image invoice",
+                submitter="owner",
+                status="submitted",
+            )
+            db.add(request)
+            db.commit()
+            request_id = request.id
+
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/requests/{request_id}/documents",
+                headers={"X-User": "owner", "X-Role": "submitter"},
+                files={
+                    "file": (
+                        filename,
+                        _invoice_image_bytes(image_format),
+                        mime_type,
+                    )
+                },
+            )
+
+        assert response.status_code == 201
+        payload = response.json()
+        fields = payload["extracted_fields"]["fields"]
+        assert payload["mime_type"] == mime_type
+        assert payload["extracted_fields"]["extraction_status"] == "success"
+        assert payload["extracted_fields"]["document_type"] == "invoice"
+        assert fields["supplier"]["value"] == "Acme Supplies"
+        assert fields["invoice_number"]["value"] == "INV-TEST-1"
+        assert fields["date"]["value"] == "10/23/2026"
+        assert fields["subtotal"]["value"] == "$100.00"
+        assert fields["tax"]["value"] == "$18.00"
+        assert fields["total"]["value"] == "$118.00"
+        assert payload["verification_result"]["status"] == "checks_passed"
+
+        with Session(engine) as db:
+            saved = db.get(Document, payload["id"])
+            assert saved.extracted_fields == payload["extracted_fields"]
+            assert saved.extracted_text
+            assert saved.verification_result == payload["verification_result"]
+            assert db.get(ReviewRequest, request_id).current_version == 1
+            actions = set(db.scalars(
+                select(AuditEvent.action).where(AuditEvent.request_id == request_id)
+            ))
+            assert {"document_uploaded", "extraction_completed", "verification_completed"} <= actions
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+@pytest.mark.skipif(
+    not ocr_service._resolve_tesseract_executable().is_file(),
+    reason="Scanned PDF OCR requires a local Tesseract executable.",
+)
+def test_real_scanned_invoice_pdf_ocr_is_extracted_and_persisted(monkeypatch, tmp_path):
+    image = Image.open(BytesIO(_invoice_image_bytes("PNG")))
+    image_stream = BytesIO()
+    image.save(image_stream, format="PNG")
+    pdf = fitz.open()
+    page = pdf.new_page(width=900, height=525)
+    page.insert_image(page.rect, stream=image_stream.getvalue())
+    contents = pdf.tobytes()
+    pdf.close()
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    app = FastAPI()
+    app.include_router(documents_router.router)
+
+    def override_db():
+        with Session(engine) as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
+    monkeypatch.setattr(documents_router, "_store_ai_review", lambda *args: None)
+    try:
+        with Session(engine) as db:
+            request = ReviewRequest(
+                title="OCR scanned PDF invoice",
+                submitter="owner",
+                status="submitted",
+            )
+            db.add(request)
+            db.commit()
+            request_id = request.id
+
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/requests/{request_id}/documents",
+                headers={"X-User": "owner", "X-Role": "submitter"},
+                files={"file": ("invoice-scan.pdf", contents, "application/pdf")},
+            )
+
+        assert response.status_code == 201
+        payload = response.json()
+        fields = payload["extracted_fields"]["fields"]
+        assert payload["extracted_fields"]["extraction_status"] == "success"
+        assert payload["extracted_fields"]["document_type"] == "invoice"
+        assert fields["supplier"]["value"] == "Acme Supplies"
+        assert fields["invoice_number"]["value"] == "INV-TEST-1"
+        assert fields["total"]["value"] == "$118.00"
+        assert payload["verification_result"]["status"] == "checks_passed"
+        with fitz.open(stream=contents, filetype="pdf") as parsed:
+            assert parsed[0].get_text("text").strip() == ""
+        with Session(engine) as db:
+            saved = db.get(Document, payload["id"])
+            assert saved.extracted_text
+            assert saved.extracted_fields == payload["extracted_fields"]
+            assert saved.verification_result == payload["verification_result"]
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_tesseract_command_is_resolved_when_ocr_runs(monkeypatch, tmp_path):
+    executable = tmp_path / "tesseract.exe"
+    executable.write_bytes(b"test executable placeholder")
+    monkeypatch.setenv("TESSERACT_CMD", str(executable))
+    monkeypatch.setattr(ocr_service.pytesseract.pytesseract, "tesseract_cmd", "")
+
+    ocr_service.configure_tesseract()
+
+    assert ocr_service.pytesseract.pytesseract.tesseract_cmd == str(executable)
+
+
+def test_ocr_failure_is_persisted_as_a_clear_manual_review_state(monkeypatch, tmp_path):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    app = FastAPI()
+    app.include_router(documents_router.router)
+    app.include_router(reviews_router.router)
+
+    def override_db():
+        with Session(engine) as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
+    monkeypatch.setattr(documents_router, "_store_ai_review", lambda *args: None)
+    monkeypatch.setenv("TESSERACT_CMD", str(tmp_path / "missing-tesseract.exe"))
+    try:
+        with Session(engine) as db:
+            request = ReviewRequest(
+                title="Scanned document",
+                submitter="owner",
+                status="submitted",
+            )
             db.add(request)
             db.commit()
             request_id = request.id
@@ -1071,14 +1692,28 @@ def test_upload_route_accepts_supported_image_documents(monkeypatch, tmp_path):
             response = client.post(
                 f"/api/requests/{request_id}/documents",
                 headers={"X-User": "owner", "X-Role": "submitter"},
-                files={"file": ("certificate.png", image.getvalue(), "image/png")},
+                files={"file": ("scanned.png", image.getvalue(), "image/png")},
             )
 
         assert response.status_code == 201
         payload = response.json()
-        assert payload["mime_type"] == "image/png"
-        assert payload["extracted_fields"]["document_type"] == "certificate"
-        assert payload["extracted_fields"]["fields"]["member"]["value"] == "Ada Example"
+        assert payload["extracted_fields"]["extraction_status"] == "failed"
+        assert payload["extracted_fields"]["processing_error"] == (
+            "Tesseract OCR is unavailable. Install it or set TESSERACT_CMD "
+            "to the executable's full path."
+        )
+        assert payload["verification_result"]["status"] == "needs_review"
+        assert payload["verification_result"]["approval_decision"] == "human_review_required"
+        assert payload["extracted_fields"]["review_note"].endswith(
+            "Manual review is required."
+        )
+        approval = client.post(
+            f"/api/requests/{request_id}/decision",
+            headers={"X-User": "reviewer-1", "X-Role": "reviewer"},
+            json={"decision": "approve", "reason": "Attempt while OCR is unavailable"},
+        )
+        assert approval.status_code == 400
+        assert "Approval is blocked" in approval.json()["detail"]
     finally:
         Base.metadata.drop_all(engine)
         engine.dispose()
@@ -1304,6 +1939,24 @@ def test_correction_resubmission_and_two_stage_decision_workflow(monkeypatch, tm
             "certificate",
             {"certificate_id": "CERT-2026-77"},
         ),
+        (
+            "bank-statement.pdf",
+            "BANK STATEMENT\nAccount holder: Jordan Example\n"
+            "Account number: 9876543210\nStatement period start: 2026-09-01\n"
+            "Statement period end: 2026-09-30\nOpening balance: 100.00\n"
+            "Total credits: 50.00\nTotal debits: 20.00\nClosing balance: 130.00",
+            "bank_statement",
+            {"account_holder": "Jordan Example", "opening_balance": "100.00"},
+        ),
+        (
+            "income-tax-return.pdf",
+            "INCOME TAX RETURN\nTaxpayer name: Jordan Example\n"
+            "Taxpayer ID: TX-4455\nAssessment year: 2025-26\n"
+            "Acknowledgement number: ACK-2025-100\nTaxable income: 450000\n"
+            "Tax paid: 20000",
+            "income_tax_document",
+            {"taxpayer_name": "Jordan Example", "assessment_year": "2025-26"},
+        ),
     ],
 )
 def test_real_pdf_extraction_classification_and_verification(
@@ -1337,7 +1990,11 @@ def test_real_pdf_extraction_classification_and_verification(
     assert context["document_type"]["value"] == expected_type
     assert context["verification_findings"]
     assert any(finding.get("evidence") for finding in context["verification_findings"])
-    assert expected_fields[next(iter(expected_fields))] in str(context["fields"])
+    first_field = next(iter(expected_fields))
+    if first_field in {"account_holder", "account_number", "taxpayer_name", "taxpayer_id"}:
+        assert "[REDACTED]" in str(context["fields"]) or "***" in str(context["fields"])
+    else:
+        assert expected_fields[first_field] in str(context["fields"])
 
 
 def test_unknown_and_unreadable_text_do_not_claim_successful_classification():
@@ -1348,6 +2005,212 @@ def test_unknown_and_unreadable_text_do_not_claim_successful_classification():
     assert unknown["extraction_status"] == "success"
     assert unknown["document_type"] == "unknown"
     assert verify_document(unknown)["findings"][0]["status"] == "inconclusive"
+
+
+def test_reprocess_refreshes_legacy_results_and_invalidates_ai_without_new_version(
+    monkeypatch, tmp_path
+):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    app = FastAPI()
+    app.include_router(documents_router.router)
+
+    def override_db():
+        with Session(engine) as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    stored_path = tmp_path / "invoice.png"
+    stored_path.write_bytes(b"stored original")
+    processed = _extracted_fields()
+    captured = {}
+    monkeypatch.setattr(
+        documents_router,
+        "_process_document",
+        lambda path, filename: (
+            "TAX INVOICE\nInvoice No: INV-17",
+            processed,
+            verify_document(processed),
+        ),
+    )
+
+    def store_suggestion(db, request_id, document, user):
+        captured["context"] = genai_service.build_context(document)
+        db.add(AuditEvent(
+            request_id=request_id,
+            actor="system",
+            action="ai_suggestion_generated",
+            details={
+                "document_id": document.id,
+                "action": None,
+                "suggestion_available": True,
+            },
+        ))
+        db.commit()
+
+    monkeypatch.setattr(documents_router, "_store_ai_review", store_suggestion)
+    try:
+        with Session(engine) as db:
+            request = ReviewRequest(
+                title="Legacy invoice",
+                submitter="owner",
+                status="under_review",
+                current_version=2,
+            )
+            db.add(request)
+            db.flush()
+            document = Document(
+                request_id=request.id,
+                original_filename="invoice.png",
+                stored_filename="stored-invoice.png",
+                storage_path=str(stored_path),
+                mime_type="image/png",
+                size_bytes=15,
+                sha256="a" * 64,
+                extracted_text="old OCR",
+                extracted_fields={
+                    "extraction_status": "success",
+                    "document_type": "invoice",
+                    "fields": {
+                        "total": {
+                            "value": None,
+                            "corrected_value": "118.00",
+                            "correction_reason": "Checked against source",
+                        }
+                    },
+                },
+                verification_result={"status": "needs_review", "findings": []},
+            )
+            db.add(document)
+            db.flush()
+            request_id, document_id = request.id, document.id
+            db.add(AuditEvent(
+                request_id=request_id,
+                actor="gemini",
+                action="ai_suggestion_generated",
+                details={"document_id": document_id, "action": "request_correction"},
+            ))
+            db.commit()
+
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/requests/{request_id}/documents/{document_id}/reprocess",
+                headers={"X-User": "reviewer", "X-Role": "reviewer"},
+            )
+
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["extracted_text"] == "TAX INVOICE\nInvoice No: INV-17"
+        assert payload["extracted_fields"]["fields"]["total"]["corrected_value"] == "118.00"
+        assert captured["context"]["document_id"] == document_id
+        assert captured["context"]["verification_findings"]
+        with Session(engine) as db:
+            saved_request = db.get(ReviewRequest, request_id)
+            saved = db.get(Document, document_id)
+            actions = set(db.scalars(
+                select(AuditEvent.action).where(AuditEvent.request_id == request_id)
+            ))
+            assert saved_request.current_version == 2
+            assert saved.extracted_fields == payload["extracted_fields"]
+            assert saved.verification_result == payload["verification_result"]
+            assert {
+                "document_reprocessed",
+                "ai_suggestion_invalidated",
+                "ai_suggestion_generated",
+            } <= actions
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_reprocess_does_not_overwrite_results_when_version_changes_during_ocr(
+    monkeypatch, tmp_path
+):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    app = FastAPI()
+    app.include_router(documents_router.router)
+
+    def override_db():
+        with Session(engine) as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    stored_path = tmp_path / "invoice.pdf"
+    stored_path.write_bytes(b"stored original")
+    processed = _extracted_fields()
+
+    def process_while_new_version_arrives(path, filename):
+        with Session(engine) as concurrent_db:
+            request = concurrent_db.scalar(select(ReviewRequest))
+            request.current_version += 1
+            document = concurrent_db.get(Document, document_id)
+            document.extracted_text = "concurrent successful OCR"
+            document.extracted_fields = {
+                "extraction_status": "success",
+                "document_type": "invoice",
+                "fields": {"total": {"value": "$118.00"}},
+            }
+            document.verification_result = {
+                "status": "checks_passed",
+                "findings": [{"rule_id": "total_consistency", "status": "pass"}],
+            }
+            concurrent_db.commit()
+        return "stale OCR", processed, verify_document(processed)
+
+    monkeypatch.setattr(
+        documents_router, "_process_document", process_while_new_version_arrives
+    )
+    monkeypatch.setattr(documents_router, "_store_ai_review", lambda *args: None)
+    try:
+        with Session(engine) as db:
+            request = ReviewRequest(
+                title="Concurrent resubmission",
+                submitter="owner",
+                status="under_review",
+                current_version=1,
+            )
+            db.add(request)
+            db.flush()
+            document = Document(
+                request_id=request.id,
+                original_filename="invoice.pdf",
+                stored_filename="stored-invoice.pdf",
+                storage_path=str(stored_path),
+                mime_type="application/pdf",
+                size_bytes=15,
+                sha256="b" * 64,
+                extracted_text="newer persisted OCR",
+                extracted_fields={"extraction_status": "success", "fields": {}},
+                verification_result={"status": "needs_review", "findings": []},
+            )
+            db.add(document)
+            db.commit()
+            request_id, document_id = request.id, document.id
+
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/requests/{request_id}/documents/{document_id}/reprocess",
+                headers={"X-User": "reviewer", "X-Role": "reviewer"},
+            )
+
+        assert response.status_code == 409
+        with Session(engine) as db:
+            saved = db.get(Document, document_id)
+            assert saved.extracted_text == "concurrent successful OCR"
+            assert saved.extracted_fields["fields"]["total"]["value"] == "$118.00"
+            assert saved.verification_result["status"] == "checks_passed"
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
 
     unreadable = extract_fields({"text": " \n ", "pages": [{"text": ""}]})
     assert unreadable["extraction_status"] == "needs_review"
@@ -1382,7 +2245,7 @@ def test_missing_fields_and_item_arithmetic_are_distinguished():
 
 
 @pytest.mark.skipif(
-    not ocr_service.TESSERACT_EXE.is_file(),
+    not ocr_service._resolve_tesseract_executable().is_file(),
     reason="Scanned PDF OCR requires a local Tesseract executable.",
 )
 def test_scanned_pdf_uses_ocr_fallback(tmp_path):

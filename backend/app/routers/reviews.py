@@ -14,6 +14,7 @@ from ..schemas import (
     RequestRead,
     ReviewDecision,
 )
+from ..services.verification_service import verify_document
 
 router = APIRouter(tags=["reviews"])
 
@@ -63,6 +64,7 @@ def stored_ai_suggestion(db: Session, request_id: int, document_id: int):
                 "ai_suggestion_generated",
                 "ai_human_review_required",
                 "ai_suggestion_failed",
+                "ai_suggestion_invalidated",
             ]),
         )
         .order_by(AuditEvent.id.desc())
@@ -276,8 +278,19 @@ def correct_field(
         None,
     )
     if previous is None:
-        extracted = (document.extracted_fields or {}).get("fields", {})
-        previous = (extracted.get(payload.field) or {}).get("value")
+        record = (extracted_fields.get(payload.field) or {})
+        previous = record.get("corrected_value", record.get("value"))
+
+    record = dict(extracted_fields[payload.field])
+    if "original_value" not in record:
+        record["original_value"] = record.get("value")
+    record["corrected_value"] = payload.value.strip()
+    record["correction_reason"] = payload.reason.strip()
+    record["status"] = "reviewer_corrected"
+    extracted_fields = {**extracted_fields, payload.field: record}
+    extracted = {**extracted, "fields": extracted_fields}
+    document.extracted_fields = extracted
+    document.verification_result = verify_document(extracted)
 
     event = AuditEvent(
         request_id=request_id,
@@ -292,6 +305,46 @@ def correct_field(
         },
     )
     db.add(event)
+    db.add(AuditEvent(
+        request_id=request_id,
+        actor=user,
+        action="verification_completed",
+        details={
+            "document_id": document.id,
+            "verification_status": document.verification_result.get(
+                "status", "needs_review"
+            ),
+            "trigger": "field_correction",
+            "field": payload.field,
+        },
+    ))
+
+    previous_suggestion = db.scalars(
+        select(AuditEvent)
+        .where(
+            AuditEvent.request_id == request_id,
+            AuditEvent.action.in_([
+                "ai_suggestion_generated",
+                "ai_human_review_required",
+                "ai_suggestion_failed",
+            ]),
+        )
+        .order_by(AuditEvent.id.desc())
+    ).first()
+    if (
+        previous_suggestion is not None
+        and (previous_suggestion.details or {}).get("document_id") == document.id
+    ):
+        db.add(AuditEvent(
+            request_id=request_id,
+            actor="system",
+            action="ai_suggestion_invalidated",
+            details={
+                "document_id": document.id,
+                "reason": "Extracted fields or verification findings changed.",
+                "trigger": "field_correction",
+            },
+        ))
     db.commit()
     db.refresh(event)
     return event

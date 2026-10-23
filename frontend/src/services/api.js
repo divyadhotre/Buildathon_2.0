@@ -62,7 +62,19 @@ const utc = (s) => (s && !/(Z|[+-]\d\d:?\d\d)$/i.test(s) ? `${s}Z` : s);
 
 const LABELS = {
   total: "Total amount", supplier: "Supplier", invoice_number: "Invoice number",
-  date: "Invoice date", purchase_order: "Purchase order", subtotal: "Subtotal", tax: "Tax"
+  buyer: "Buyer", date: "Invoice date", due_date: "Due date",
+  purchase_order: "Purchase order", subtotal: "Subtotal", tax: "Tax",
+  discount: "Discount", currency: "Currency", line_items: "Line items",
+  account_holder: "Account holder", account_number: "Account number",
+  bank_name: "Bank", statement_start_date: "Statement start",
+  statement_end_date: "Statement end", opening_balance: "Opening balance",
+  closing_balance: "Closing balance", total_debits: "Total debits",
+  total_credits: "Total credits", taxpayer_name: "Taxpayer",
+  taxpayer_id: "Taxpayer identifier", assessment_year: "Assessment year",
+  financial_year: "Financial year", acknowledgement_number: "Acknowledgement number",
+  filing_date: "Filing date", filing_status: "Filing status",
+  gross_income: "Gross income", taxable_income: "Taxable income",
+  tax_paid: "Tax paid", tax_due: "Tax due", transactions: "Transactions"
 };
 const KEYS = Object.fromEntries(Object.entries(LABELS).map(([k, v]) => [v, k]));
 const ORDER = Object.keys(LABELS); // total first, so it is the "amount" field
@@ -131,16 +143,25 @@ function build(req, docs = [], events = [], includeExtractedText = false) {
 
   const fieldKeys = documentType === "invoice"
     ? [...ORDER.filter((k) => k in raw), ...Object.keys(raw).filter((k) => !ORDER.includes(k))]
-    : Object.keys(raw);
+    : Object.keys(raw).filter((k) => {
+      const field = raw[k];
+      return field && typeof field === "object"
+        && (field.value != null || field.corrected_value != null
+          || field.candidate != null || field.status === "uncertain"
+          || field.status === "reviewer_corrected");
+    });
   const fields = fieldKeys.map((k) => {
     const field = raw[k] && typeof raw[k] === "object" ? raw[k] : {};
     return {
       name: fieldLabel(k),
       key: k,
-      value: displayFieldValue(fixes[k] ?? field.value),
-      original_value: displayFieldValue(field.value),
+      value: displayFieldValue(fixes[k] ?? field.corrected_value ?? field.value ?? field.candidate),
+      original_value: displayFieldValue(field.original_value ?? field.value ?? field.candidate),
       confidence: typeof field.confidence === "number" ? field.confidence : undefined,
-      source: field.source === "regex_text_match" ? "Text match" : field.source,
+      status: field.status,
+      source: field.corrected_value != null || fixes[k] != null
+        ? "Reviewer correction"
+        : field.source === "regex_text_match" ? "Text match" : field.source,
       page: field.evidence?.page,
       file: clean(inv?.original_filename),
       snippet: field.evidence?.snippet
@@ -153,11 +174,11 @@ function build(req, docs = [], events = [], includeExtractedText = false) {
 
   // Latest Gemini suggestion saved for the current invoice (stored as an audit event).
   const stored = events
-    .filter((e) => ["ai_suggestion_generated", "ai_human_review_required", "ai_suggestion_failed"].includes(e.action) && e.details?.document_id === inv?.id)
+    .filter((e) => ["ai_suggestion_generated", "ai_human_review_required", "ai_suggestion_failed", "ai_suggestion_invalidated"].includes(e.action) && e.details?.document_id === inv?.id)
     .sort((a, b) => b.id - a.id)[0];
   const ai = stored ? {
     decision: stored.details.action,
-    reason: stored.details.error || stored.details.explanation,
+    reason: stored.details.error || stored.details.explanation || stored.details.reason,
     key_findings: stored.details.key_findings || [],
     document_identification: stored.details.document_identification,
     model: stored.details.model,
@@ -165,6 +186,7 @@ function build(req, docs = [], events = [], includeExtractedText = false) {
     human_review_required: !!stored.details.human_review_required,
     suggestion_available: stored.action !== "ai_suggestion_failed" && stored.details.suggestion_available === true,
     unavailable: stored.action === "ai_suggestion_failed",
+    stale: stored.action === "ai_suggestion_invalidated",
     created_at: utc(stored.created_at)
   } : null;
   const correctionEvent = [...events]
@@ -189,6 +211,7 @@ function build(req, docs = [], events = [], includeExtractedText = false) {
     submitter: req.submitter,
     created_at: utc(req.created_at),
     extraction_status: inv ? ef.extraction_status || "unknown" : "no_document",
+    processing_error: ef.processing_error ?? null,
     extracted_text: includeExtractedText && typeof inv?.extracted_text === "string"
       ? inv.extracted_text : "",
     document_type: documentType,
@@ -281,6 +304,12 @@ export const correctField = (requestId, label, value, reason) =>
   apiRequest(
     `/api/requests/${id(requestId)}/corrections`,
     send("POST", { field: KEYS[label] || label, value: String(value), reason })
+  );
+
+export const reprocessDocument = (requestId, documentId) =>
+  apiRequest(
+    `/api/requests/${id(requestId)}/documents/${id(documentId)}/reprocess`,
+    { method: "POST" }
   );
 
 // Asks the backend to run Gemini. It only stores a suggestion; it never decides.

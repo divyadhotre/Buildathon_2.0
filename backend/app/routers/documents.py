@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy.orm import Session
 
-from ..auth import get_actor
+from ..auth import DECIDERS, get_actor
 from ..config import settings
 from ..database import get_db
 from ..models import AuditEvent, Document, ReviewRequest
@@ -41,6 +41,48 @@ MIME_TYPES = {
     ".txt": "text/plain",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
+
+
+def _process_document(path: Path, original_filename: str):
+    try:
+        ocr_result = extract_text(path)
+        extraction_result = extract_fields(ocr_result)
+        verification_result = verify_document(extraction_result)
+        return ocr_result.get("text") or None, extraction_result, verification_result
+    except Exception as exc:
+        logger.exception("Document extraction or verification failed")
+        processing_error = (
+            str(exc).strip()[:500]
+            if isinstance(exc, (FileNotFoundError, RuntimeError, ValueError))
+            and str(exc).strip()
+            else "Unexpected document processing error. Check the backend logs."
+        )
+        extracted_fields = {
+            "filename": original_filename,
+            "extraction_status": "failed",
+            "document_type": "unknown",
+            "classification_confidence": 0.0,
+            "classification_evidence": (
+                "Classification unavailable because text extraction failed."
+            ),
+            "fields": {},
+            "processing_error": processing_error,
+            "review_note": f"Automatic extraction failed: {processing_error} Manual review is required.",
+        }
+        verification_result = {
+            "status": "needs_review",
+            "findings": [
+                {
+                    "rule_id": "document_processing",
+                    "status": "not_performed",
+                    "category": "unavailable_evidence",
+                    "message": "Automatic document processing failed.",
+                }
+            ],
+            "approval_decision": "human_review_required",
+            "message": "The document was stored, but manual review is required.",
+        }
+        return None, extracted_fields, verification_result
 
 
 def _store_ai_review(db: Session, request_id: int, document: Document, user: str) -> None:
@@ -278,46 +320,9 @@ async def upload_document(
         ) from exc
 
     # M2 processing: OCR/text extraction -> field extraction -> verification.
-    try:
-        ocr_result = extract_text(storage_path)
-        extraction_result = extract_fields(ocr_result)
-        verification_result = verify_document(extraction_result)
-
-        extracted_text = ocr_result.get("text") or None
-        extracted_fields = extraction_result
-
-    except Exception:
-        logger.exception("Document extraction or verification failed")
-        # Keep the uploaded document available for manual review.
-        extracted_text = None
-        extracted_fields = {
-            "filename": original_filename,
-            "extraction_status": "failed",
-            "document_type": "unknown",
-            "classification_confidence": 0.0,
-            "classification_evidence": (
-                "Classification unavailable because text extraction failed."
-            ),
-            "fields": {},
-            "review_note": (
-                "Automatic extraction failed. Manual review is required."
-            ),
-        }
-        verification_result = {
-            "status": "needs_review",
-            "findings": [
-                {
-                    "rule_id": "document_processing",
-                    "status": "not_performed",
-                    "category": "unavailable_evidence",
-                    "message": "Automatic document processing failed.",
-                }
-            ],
-            "approval_decision": "human_review_required",
-            "message": (
-                "The document was stored, but manual review is required."
-            ),
-        }
+    extracted_text, extracted_fields, verification_result = _process_document(
+        storage_path, original_filename
+    )
 
     document = Document(
         request_id=request_id,
@@ -417,6 +422,160 @@ async def upload_document(
     if not is_reference_upload:
         _store_ai_review(db, request_id, document, user)
 
+    return document
+
+
+@router.post(
+    "/{request_id}/documents/{document_id}/reprocess",
+    response_model=DocumentRead,
+)
+def reprocess_document(
+    request_id: int,
+    document_id: int,
+    db: Session = Depends(get_db),
+    actor: tuple[str, str] = Depends(get_actor),
+):
+    user, role = actor
+    review_request = db.get(ReviewRequest, request_id)
+    document = db.get(Document, document_id)
+    if review_request is None or document is None or document.request_id != request_id:
+        raise HTTPException(status_code=404, detail="Document not found for this request")
+    if role not in DECIDERS:
+        raise HTTPException(status_code=403, detail="Your role cannot reprocess documents")
+    if user == review_request.submitter:
+        raise HTTPException(status_code=403, detail="You cannot review a request you submitted")
+    if review_request.status != "under_review":
+        raise HTTPException(
+            status_code=409,
+            detail="Documents can be reprocessed only while the request is under review",
+        )
+    if role == "approver":
+        raise HTTPException(status_code=403, detail="Only a reviewer can reprocess a document")
+
+    latest_primary = db.query(Document).filter(
+        Document.request_id == request_id,
+        ~Document.original_filename.startswith("PO__", autoescape=True),
+    ).order_by(Document.id.desc()).first()
+    if latest_primary is None or latest_primary.id != document.id:
+        raise HTTPException(status_code=409, detail="Only the current document version can be reprocessed")
+
+    storage_path = Path(document.storage_path)
+    if not storage_path.is_file():
+        raise HTTPException(status_code=409, detail="The stored document file is unavailable; saved results were not changed")
+
+    expected_version = review_request.current_version
+    previous_fields = document.extracted_fields or {}
+    previous_verification = document.verification_result or {}
+    db.rollback()
+
+    extracted_text, extracted_fields, verification_result = _process_document(
+        storage_path, document.original_filename
+    )
+    previous_records = previous_fields.get("fields")
+    current_records = extracted_fields.get("fields")
+    if isinstance(previous_records, dict) and isinstance(current_records, dict):
+        for name, previous in previous_records.items():
+            if not isinstance(previous, dict) or previous.get("corrected_value") is None:
+                continue
+            current = dict(current_records.get(name) or previous)
+            current.setdefault(
+                "original_value",
+                previous.get("original_value", previous.get("value")),
+            )
+            current["corrected_value"] = previous["corrected_value"]
+            current["correction_reason"] = previous.get("correction_reason")
+            current["status"] = "reviewer_corrected"
+            current_records[name] = current
+        verification_result = verify_document(extracted_fields)
+
+    db.expire_all()
+    review_request = db.get(ReviewRequest, request_id)
+    document = db.get(Document, document_id)
+    latest_primary = db.query(Document).filter(
+        Document.request_id == request_id,
+        ~Document.original_filename.startswith("PO__", autoescape=True),
+    ).order_by(Document.id.desc()).first()
+    if (
+        review_request is None
+        or document is None
+        or review_request.current_version != expected_version
+        or review_request.status != "under_review"
+        or (document.extracted_fields or {}) != previous_fields
+        or (document.verification_result or {}) != previous_verification
+        or latest_primary is None
+        or latest_primary.id != document_id
+    ):
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="The document or review state changed during processing; reload before retrying",
+        )
+
+    document.extracted_text = extracted_text
+    document.extracted_fields = extracted_fields
+    document.verification_result = verification_result
+    db.add(AuditEvent(
+        request_id=request_id,
+        actor=user,
+        action="document_reprocessed",
+        details={
+            "document_id": document.id,
+            "version": review_request.current_version,
+            "previous_extraction_status": previous_fields.get("extraction_status", "unknown"),
+            "extraction_status": extracted_fields.get("extraction_status", "unknown"),
+            "previous_verification_status": previous_verification.get("status", "unknown"),
+            "verification_status": verification_result.get("status", "needs_review"),
+            "processing_error": extracted_fields.get("processing_error"),
+        },
+    ))
+    db.add(AuditEvent(
+        request_id=request_id,
+        actor="system",
+        action="verification_completed",
+        details={
+            "document_id": document.id,
+            "verification_status": verification_result.get("status", "needs_review"),
+            "trigger": "document_reprocessing",
+        },
+    ))
+
+    previous_ai = db.query(AuditEvent).filter(
+        AuditEvent.request_id == request_id,
+        AuditEvent.action.in_([
+            "ai_suggestion_generated",
+            "ai_human_review_required",
+            "ai_suggestion_failed",
+        ]),
+    ).order_by(AuditEvent.id.desc()).all()
+    old_suggestion = next(
+        (
+            event for event in previous_ai
+            if isinstance(event.details, dict)
+            and event.details.get("document_id") == document_id
+        ),
+        None,
+    )
+    if old_suggestion is not None:
+        db.add(AuditEvent(
+            request_id=request_id,
+            actor=user,
+            action="ai_suggestion_invalidated",
+            details={
+                "document_id": document_id,
+                "invalidated_event_id": old_suggestion.id,
+                "reason": "Document extraction and verification were reprocessed.",
+            },
+        ))
+
+    try:
+        db.commit()
+        db.refresh(document)
+    except Exception:
+        db.rollback()
+        logger.exception("Unable to persist document reprocessing for %s", document_id)
+        raise HTTPException(status_code=500, detail="Unable to save reprocessed document results")
+
+    _store_ai_review(db, request_id, document, user)
     return document
 
 
